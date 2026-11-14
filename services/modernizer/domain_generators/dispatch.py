@@ -1,0 +1,471 @@
+# ---------------------------------------------------------------------------
+# Author: Vishnuu A
+# Scope: Modernization — services/modernizer/domain_generators (dispatch.py)
+# Date: 2025-09-09
+# ---------------------------------------------------------------------------
+from __future__ import annotations
+
+import json
+import logging
+from pathlib import Path
+from collections.abc import Callable
+
+logger = logging.getLogger(__name__)
+
+_OLLAMA_SOURCE_SUFFIXES = {
+    ".cs", ".java", ".kt", ".kts", ".ts", ".tsx", ".js", ".jsx", ".go",
+    ".rs", ".php", ".dart", ".swift", ".scala", ".clj", ".r", ".jl", ".hs",
+    ".lisp", ".rpgle", ".clle", ".sql", ".sh", ".py", ".html", ".css",
+    ".c", ".cpp", ".cc", ".cxx", ".cob", ".cbl", ".rb",
+    ".ex", ".exs", ".erl",
+}
+
+
+def _validated_domain_cache(
+    cached: dict[str, str] | None, target: dict,
+) -> dict[str, str] | None:
+    """Admit cached generated source only after current strict validation.
+
+    Cache age and key identity do not establish source validity.  Older model
+    responses can contain truncated governed envelopes, and replaying them
+    bypasses every per-file generation retry.  Validate executable/source
+    entries with the language implied by their own extension (important for a
+    Java backend with a TypeScript frontend) and reject the cache atomically on
+    the first failure.
+    """
+    if not cached:
+        return None
+
+    from ..target_config import resolve_sql_dialect_hint
+    from ..validation_orchestration import _clean_generated_content
+    from services.validators import validate_file
+
+    from services.validators import _EXT_LANGUAGE
+
+    normalized = dict(cached)
+    for path, content in cached.items():
+        suffix = Path(path).suffix.casefold()
+        source_language = _EXT_LANGUAGE.get(suffix)
+        if not source_language or not isinstance(content, str):
+            continue
+        cleaned = _clean_generated_content(content)
+        result = validate_file(
+            path, cleaned, source_language,
+            dialect_hint=resolve_sql_dialect_hint(target),
+        )
+        if not result.passed:
+            logger.warning(
+                "Rejecting domain cache for %s: %s",
+                path, "; ".join(result.diagnostics[:3]),
+            )
+            return None
+        normalized[path] = cleaned
+    return normalized
+
+
+def _record_ollama_provenance(
+    files: dict[str, str], target: dict, domain: str, model: str,
+    generated_paths,
+) -> None:
+    """Record the artifacts actually authored by Ollama for one domain."""
+    generated_paths = list(generated_paths)
+    first_source = generated_paths[0] if generated_paths else next(iter(files), "ModernizedApp")
+    project_root = first_source.replace("\\", "/").split("/", 1)[0] or "ModernizedApp"
+    provenance_path = f"{project_root}/.strat-aqorynth/ollama-{domain.lower()}-provenance.json"
+    prior_sources = []
+    try:
+        prior_sources = json.loads(files.get(provenance_path, "{}")).get("source_files", [])
+    except (TypeError, ValueError):
+        pass
+    files[provenance_path] = json.dumps({
+        "generator": "ollama",
+        "model": model,
+        "target": target.get("name"),
+        "domain": domain,
+        "source_files": list(dict.fromkeys([*prior_sources, *generated_paths])),
+    }, indent=2)
+
+
+# Function: _ollama_generate_all_sources
+def _ollama_generate_all_sources(
+    files: dict[str, str], target: dict, domain: str, model: str, system: str,
+    on_step, on_validation,
+    *, user_request: str = "", contracts: str = "", namespace_map: str = "",
+    required_elements: str = "", file_manifest: str = "",
+    exclude_paths: set | None = None,
+    max_attempts: int = 3,
+    generation_max_seconds: float | None = None,
+) -> None:
+    """Regenerate every executable/source artifact through Ollama.
+
+    Deterministic content is used only as an exact framework/file contract.
+    It is never returned as application source without a successful validated
+    Ollama response — EXCEPT for `exclude_paths`, which are pinned/governed
+    files (e.g. the money-transfer domain pack) whose content is already
+    known-correct and dialect-consistent by construction. Sending those
+    through this same "regenerate as a contract" path defeats the entire
+    point of pinning them: a small local model asked to re-author a
+    postgres-targeted banking schema/repository routinely reverts to the
+    far more common T-SQL patterns it saw in training (IDENTITY, sys.tables,
+    WITH (UPDLOCK, HOLDLOCK), OUTPUT INSERTED) even when hard "AUTHORITATIVE
+    SQL DIALECT" instructions and a correct contract are right in front of
+    it — reintroducing the exact dialect-mismatch/API-drift bugs the pinned
+    pack exists to prevent. Callers must pass every pinned path here.
+    """
+    from .._shared import _FILE_GENERATION_MAX_SECONDS, _TOKENS_DEFAULT, _adaptive_num_ctx
+    from ..target_config import resolve_sql_dialect_hint
+    from ..validation_orchestration import _generate_validated
+    from services.validators import _resolve_sql_dialect
+
+    exclude_paths = exclude_paths or frozenset()
+    sql_dialect = _resolve_sql_dialect(resolve_sql_dialect_hint(target))
+    has_sql = any(
+        Path(path).suffix.casefold() == ".sql" for path in files if path not in exclude_paths
+    )
+    if has_sql and not sql_dialect:
+        raise ValueError(
+            "SQL source generation requires an authoritative relational db_target; "
+            "generic ANSI fallback is prohibited."
+        )
+    generated_paths = []
+    for rel_path, contract in list(files.items()):
+        if rel_path in exclude_paths:
+            continue
+        if Path(rel_path).suffix.casefold() not in _OLLAMA_SOURCE_SUFFIXES:
+            continue
+        if on_step:
+            on_step(f"[{domain}] Ollama generating {rel_path}…")
+        project_contract = "\n\n".join(
+            f"{heading}:\n{value.strip()}"
+            for heading, value in (
+                ("ORIGINAL USER REQUIREMENTS (authoritative; do not omit or weaken)", user_request),
+                ("PROJECT CONTRACTS (authoritative across every file)", contracts),
+                ("NAMESPACE / SYMBOL LOCATION MAP", namespace_map),
+                ("CROSS-CUTTING REQUIRED ELEMENTS", required_elements),
+                ("COMPLETE PROJECT FILE MANIFEST", file_manifest),
+            )
+            if value and value.strip()
+        )
+        prompt = (
+            f"Generate the complete production-ready contents of {rel_path} for "
+            f"{target.get('name', 'the selected target stack')}.\n"
+            + (
+                f"AUTHORITATIVE SQL DIALECT: {sql_dialect}. Use only this dialect; "
+                "do not emit generic ANSI or syntax from another database.\n"
+                if Path(rel_path).suffix.casefold() == ".sql" else ""
+            )
+            +
+            "The contract below defines required framework APIs, imports, public behavior, "
+            "and integration points. Preserve those requirements, but implement the file "
+            "fully and idiomatically. Do not emit markdown fences, prose, TODOs, placeholders, "
+            "or comments claiming generation failed. This file is one part of a governed "
+            "project: all types, endpoints, dependencies, events, configuration, security, "
+            "observability, persistence, and tests must remain consistent with the project "
+            "contracts. Never replace a requested production integration with an in-memory "
+            "stub or illustrative implementation. Implement only the responsibility assigned "
+            "to this exact path. Do not copy project-wide concerns into every file: bootstrap "
+            "classes must not contain controller, Kafka listener/publisher, persistence, or "
+            "test behavior when the manifest assigns those concerns elsewhere. Import only "
+            "symbols actually used by this file.\n\n"
+            f"{project_contract}\n\n"
+            f"FILE CONTRACT:\n{contract}"
+        )
+        if (
+            target.get("language", "").casefold() == "java"
+            and "/src/test/" in rel_path.replace("\\", "/").casefold()
+        ):
+            prompt += (
+                "\n\nJAVA TEST SIZE CONTRACT: Keep this focused test file under 140 lines. "
+                "Generate only the smallest meaningful success case and error case requested by "
+                "the file contract. Use ASCII punctuation. Close every class and method; never "
+                "repeat scenarios to fill space."
+            )
+        validation_language = target.get("language", "")
+        # A Java full-stack project still contains real TypeScript/JavaScript
+        # and SQL sources. Passing the backend language here allowed malformed
+        # React files to pass the Java validator and fail only later in Vite.
+        # Keep this override Java-specific so other generation routes retain
+        # their existing language contracts.
+        if validation_language.casefold() == "java":
+            suffix = Path(rel_path).suffix.casefold()
+            if suffix in {".ts", ".tsx"}:
+                validation_language = "typescript"
+            elif suffix in {".js", ".jsx"}:
+                validation_language = "javascript"
+            elif suffix == ".sql":
+                validation_language = "sql"
+        content, result, attempts = _generate_validated(
+            prompt, model=model, system=system, max_tokens=_TOKENS_DEFAULT,
+            num_ctx=_adaptive_num_ctx(len(prompt) + len(system), _TOKENS_DEFAULT),
+            rel_path=rel_path, language=validation_language,
+            dialect=sql_dialect,
+            max_attempts=max_attempts,
+            generation_max_seconds=(generation_max_seconds or _FILE_GENERATION_MAX_SECONDS),
+            on_token=getattr(on_step, "on_token", None),
+            on_attempt=(
+                (lambda attempt, maximum, path=rel_path:
+                    on_step(f"Ollama repairing {path} — attempt {attempt}/{maximum}…"))
+                if on_step else None
+            ),
+        )
+        if not result.passed:
+            raise RuntimeError(
+                f"Strict source validation failed for {rel_path}: "
+                + "; ".join(result.diagnostics[:5])
+            )
+        files[rel_path] = content
+        generated_paths.append(rel_path)
+        if on_validation:
+            on_validation(result, attempts)
+
+    _record_ollama_provenance(files, target, domain, model, generated_paths)
+
+
+
+# Function: _detect_frontend_framework
+def _detect_frontend_framework(frontend_tech: str) -> str | None:
+    """Map a frontend_tech string to the _llm_domain_typescript framework
+    label. Was previously keyed off target['db_target'] (always "postgres"
+    for react_ts/angular_ts/vue3 — a stale key that never matched any of
+    the three, so every preset silently fell back to "React", including
+    Angular and Vue), which is why selecting Angular still produced React
+    code. Reading frontend_tech directly is correct for every preset and
+    for the auto-detected overrides from _apply_stack_signals.
+    """
+    low = (frontend_tech or "").lower()
+    if "angular" in low:
+        return "Angular"
+    if "vue" in low:
+        return "Vue 3"
+    if "react" in low:
+        return "React"
+    return None
+
+
+# Function: _dispatch_backend_generation
+def _dispatch_backend_generation(
+    lang, files, domain, root_ns, domain_tables, antipatterns,
+    context, prod_rules, source_sec, guide_sec,
+    model, system, tables, target, on_step, generate, on_validation,
+) -> set:
+    from .csharp import _llm_domain_csharp
+    from .go import _llm_domain_go
+    from .java import _llm_domain_java
+    from .python_gen import _llm_domain_python
+    from .typescript import _llm_domain_typescript
+    generated_paths = set()
+    if lang == "java":
+        generated_paths.update(_llm_domain_java(
+            files, domain, root_ns, domain_tables, antipatterns,
+            context, prod_rules, source_sec, guide_sec,
+            model, system, tables, target, on_step, generate, on_validation,
+        ) or ())
+    elif lang in ("typescript", "javascript"):
+        fw = _detect_frontend_framework(target.get("frontend_tech", ""))
+        if fw:
+            generated_paths.update(_llm_domain_typescript(
+                files, domain, root_ns, domain_tables,
+                context, prod_rules, source_sec, guide_sec,
+                model, system, fw, target, on_step, generate, on_validation,
+            ) or ())
+    elif lang == "go":
+        _llm_domain_go(
+            files, domain, root_ns, domain_tables,
+            context, prod_rules, target.get("backend_tech", ""),
+            model, system, tables, on_step, generate, on_validation,
+        )
+    elif lang == "python":
+        _llm_domain_python(
+            files, domain, root_ns, domain_tables,
+            context, prod_rules,
+            model, system, tables, on_step, generate, on_validation,
+        )
+    elif lang == "csharp":
+        generated_paths.update(_llm_domain_csharp(
+            files, domain, root_ns, domain_tables, antipatterns,
+            context, prod_rules, source_sec,
+            model, system, tables, target, on_step, generate, on_validation,
+        ) or ())
+    else:
+        # Do not silently emit C# for a guided non-C# target.  A deterministic
+        # language-correct vertical slice is preferable to cross-language output
+        # and remains available when the local model is offline.
+        from ..scaffolds.polyglot import generate_polyglot_project
+        files.update(generate_polyglot_project(lang, root_ns, domain, target))
+    return generated_paths
+
+
+# Function: _maybe_generate_frontend
+def _maybe_generate_frontend(
+    lang, target, files, domain, root_ns, domain_tables,
+    context, prod_rules, source_sec, guide_sec,
+    model, system, on_step, generate, on_validation,
+) -> set:
+    # A backend language choice (csharp/java/python) says nothing about the
+    # frontend framework — "Angular frontend + .NET backend" is a common,
+    # valid combination that the old per-language dispatch above couldn't
+    # express (lang picks exactly one branch). lang in ("typescript",
+    # "javascript") already generated its own frontend in
+    # _dispatch_backend_generation and must not be duplicated here.
+    from .typescript import _llm_domain_typescript
+    from ..scaffolds.csharp import _gen_aveva_js_module, _gen_frontend
+    if lang in ("typescript", "javascript"):
+        return set()
+    generated_paths = set()
+    fw = _detect_frontend_framework(target.get("frontend_tech", ""))
+    if fw:
+        # A full-stack frontend needs framework-specific system rules rather
+        # than the backend's .NET/Java-only profile.
+        from ..prompt_pipeline import _safe_build_system_prompt
+        from ..target_config import _stack_profiles_for
+        frontend_system = _safe_build_system_prompt(
+            _stack_profiles_for("typescript", target, include_datastore=False),
+            f"You are a senior {fw} engineer modernizing an existing application without changing its business behavior.",
+        )
+        if on_step:
+            on_step(f"[{domain}] Generating {fw} frontend…")
+        generated_paths.update(_llm_domain_typescript(
+            files, domain, root_ns, domain_tables,
+            context, prod_rules, source_sec, guide_sec,
+            model, frontend_system, fw, target, on_step, generate, on_validation,
+        ) or ())
+    elif lang == "csharp":
+        if target.get("name", "").startswith("AVEVA"):
+            _gen_aveva_js_module(files, root_ns, domain)
+        else:
+            _gen_frontend(files, root_ns, domain)
+    return generated_paths
+
+
+# Function: _llm_gen_domain
+def _llm_gen_domain(
+    domain: str,
+    target: dict,
+    analysis: dict,
+    root_ns: str,
+    tables: list[str],
+    guide_text: str = "",
+    model: str | None = None,
+    on_step: Callable[[str], None] | None = None,
+    on_validation: Callable[[object, int], None] | None = None,
+) -> dict[str, str]:
+    """Call LLM to generate core service code for one domain. Falls back to templates."""
+
+    # ── Domain-level result cache (content-addressed, TTL=24h by default) ────
+    from ..conversion_pipeline import _dom_cache_key, _load_dom_cache, _save_dom_cache
+    from ..docs_generation import _guide_section, _source_section
+    from ..prompt_pipeline import _safe_build_system_prompt
+    from ..target_config import _stack_profiles_for
+    try:
+        from services.llm import generate, check_status
+        if not model:
+            llm_info = check_status()
+            if not llm_info.get("available"):
+                raise RuntimeError("LLM not available")
+            model = llm_info.get("active_model")
+            if not model:
+                raise RuntimeError("No code-generation model available")
+    except Exception as exc:
+        raise RuntimeError(
+            "Ollama code generation is required and no usable model is available"
+        ) from exc
+
+    # Include the selected model in the content-addressed key. Without this,
+    # changing the module default could return artifacts produced by the old
+    # model until the cache TTL expired.
+    _cache_key = _dom_cache_key(
+        domain, target, root_ns, tables, analysis, model=model or "",
+    )
+    _cached = _validated_domain_cache(_load_dom_cache(_cache_key), target)
+    if _cached:
+        logger.info(
+            "Domain cache HIT: %s / %s / %s (skipping LLM)",
+            domain,
+            target.get("name", ""),
+            model,
+        )
+        return _cached
+
+    lang         = target.get("language", "csharp")
+    stack_name   = target["name"]
+    persona      = target.get("llm_persona", f"a {stack_name} expert")
+    arch         = analysis.get("architecture", {})
+    folder_path  = analysis.get("folder_path", "")
+    source       = arch.get("pattern", "Legacy application")
+    techs        = ", ".join(arch.get("detected_techs", []) or ["unknown"])
+    loc          = arch.get("total_loc", 0)
+    antipatterns = [i["type"] for i in analysis.get("antipatterns", [])[:5]]
+    domain_tables = [t for t in tables if domain.lower() in t.lower()] or tables[:3]
+
+    guide_sec  = _guide_section(guide_text)
+    source_sec = _source_section(folder_path, lang, domain)
+
+    context = (
+        f"Source project: {source} | Technologies: {techs} | LOC: {loc:,}\n"
+        f"Domain: {domain} | Relevant tables: {', '.join(domain_tables) or 'N/A'}\n"
+        f"Anti-patterns to fix: {', '.join(antipatterns) or 'none detected'}\n"
+        f"Target: {stack_name}"
+    )
+    prod_rules = (
+        "PRODUCTION CODE RULES (mandatory):\n"
+        "- COMPLETE implementation of every method \u2014 no empty bodies, no TODOs, no stubs\n"
+        "- Full error handling with specific exception types and meaningful messages\n"
+        "- Input validation on all public API entry points\n"
+        "- Structured logging (info on success, warn on not-found, error on exceptions)\n"
+        "- All configuration (DB URL, credentials, ports) from environment variables\n"
+        "- Proper HTTP status codes: 200 OK, 201 Created, 204 No Content, 400 Bad Request, "
+        "404 Not Found, 409 Conflict, 500 Internal Server Error\n"
+        "- No hardcoded credentials or connection strings anywhere in the code"
+    )
+    system = _safe_build_system_prompt(_stack_profiles_for(lang, target), f"You are {persona}.")
+
+    from ..scaffolds.polyglot import generate_polyglot_project
+    files: dict[str, str] = generate_polyglot_project(lang, root_ns, domain, target)
+    stack_text = f"{target.get('name', '')} {target.get('backend_tech', '')}".casefold()
+    is_special_typescript = lang in {"typescript", "javascript"} and any(
+        value in stack_text for value in ("nestjs", "next.js", "node.js", "express", "graphql")
+    )
+    is_special_python = lang == "python" and "django" in stack_text
+
+    generated_paths = set()
+    if not (is_special_typescript or is_special_python):
+        generated_paths.update(_dispatch_backend_generation(
+            lang, files, domain, root_ns, domain_tables, antipatterns,
+            context, prod_rules, source_sec, guide_sec,
+            model, system, tables, target, on_step, generate, on_validation,
+        ) or ())
+        generated_paths.update(_maybe_generate_frontend(
+            lang, target, files, domain, root_ns, domain_tables,
+            context, prod_rules, source_sec, guide_sec,
+            model, system, on_step, generate, on_validation,
+        ) or ())
+
+    if lang in {"java", "csharp", "typescript", "javascript"}:
+        # These stacks already went through bounded, syntax-validated
+        # specialist generators above. Re-authoring every deterministic
+        # scaffold one-by-one doubled inference time and could replace a valid
+        # project file with an unrelated generic draft. Preserve deterministic
+        # bootstrap/configuration files and let the real project build validate
+        # their integration once.
+        _record_ollama_provenance(
+            files, target, domain, model, sorted(generated_paths),
+        )
+    else:
+        _ollama_generate_all_sources(
+            files, target, domain, model, system, on_step, on_validation,
+            user_request="\n\n".join(part for part in (context, prod_rules, source_sec, guide_sec) if part),
+            required_elements=prod_rules,
+            file_manifest="\n".join(sorted(files)),
+            exclude_paths=generated_paths,
+        )
+        # Keep provenance for files generated and validated by the domain
+        # specialists above. The general pass now skips those files instead
+        # of spending a second long inference call re-authoring them.
+        if generated_paths:
+            _record_ollama_provenance(
+                files, target, domain, model, sorted(generated_paths),
+            )
+
+    # ── Persist to domain cache so repeat runs skip all LLM calls ────────────
+    _save_dom_cache(_cache_key, files)
+    return files  # end _llm_gen_domain

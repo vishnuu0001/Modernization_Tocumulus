@@ -1,0 +1,8 @@
+{
+  "id": "cobol-batch",
+  "target_stack": "cobol_db2",
+  "request": "Single COBOL batch program. Inputs:\n- transactionFile: fixed-width sequential records with account and COMP-3 amount\nOutputs:\n- postingReport: fixed-width report with accepted, rejected and control-total states\nNon-functional requirements:\n- all four divisions, copybook, FILE STATUS checks, JCL and sample input/output",
+  "project_guidelines": "Use explicit scope terminators.\nReconcile record count and monetary control totals.",
+  "run_instructions": "Use IBM Enterprise COBOL fixed columns.",
+  "expected": {"language": "cobol", "deployment": "JCL"}
+}

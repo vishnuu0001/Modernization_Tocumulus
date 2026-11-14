@@ -1,0 +1,1 @@
+{"id":"julia-applications","version":"1.0.0","languages":["julia"],"frameworks":["Julia 1.10+"],"conventions":["Type-stable hot paths","Modules with explicit exports"],"testing":["Test stdlib","Integration tests"],"lint_format":["JuliaFormatter","Aqua"],"build_dependency":["Pinned Manifest.toml","Pkg test"],"security":["Validate parsed data","No eval of untrusted input"]}

@@ -1,0 +1,216 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+  font-family: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+  font-synthesis: none;
+}
+
+html {
+  background: #f5f5f5;
+}
+
+body {
+  min-height: 100vh;
+  background: #f5f5f5;
+  color: #242424;
+  font-family: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.45;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button,
+a,
+input,
+select,
+textarea {
+  outline-color: #0078d4;
+}
+
+input,
+select,
+textarea {
+  border-color: #d2d0ce;
+  background-color: #ffffff;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: #0078d4 !important;
+  box-shadow: 0 0 0 1px #0078d4;
+}
+
+/* Azure Portal density and hierarchy. These normalize legacy utility-heavy
+   screens without requiring each route to maintain its own visual dialect. */
+.font-display {
+  font-family: 'Segoe UI Variable Display', 'Segoe UI', system-ui, sans-serif !important;
+}
+
+.font-extrabold,
+.font-bold { font-weight: 600 !important; }
+
+.text-5xl { font-size: 2rem !important; line-height: 1.2 !important; }
+.text-4xl { font-size: 1.75rem !important; line-height: 1.22 !important; }
+.text-3xl { font-size: 1.625rem !important; line-height: 1.25 !important; }
+.text-2xl { font-size: 1.375rem !important; line-height: 1.3 !important; }
+.text-xl { font-size: 1.125rem !important; line-height: 1.35 !important; }
+
+.rounded-3xl,
+.rounded-2xl { border-radius: 6px !important; }
+.rounded-xl { border-radius: 4px !important; }
+.rounded-lg { border-radius: 3px !important; }
+
+.shadow-2xl,
+.shadow-xl,
+.shadow-lg,
+.shadow-md,
+.shadow-sm {
+  box-shadow: 0 1px 2px rgb(0 0 0 / 8%) !important;
+}
+
+table {
+  font-variant-numeric: tabular-nums;
+}
+
+thead {
+  color: #605e5c;
+}
+
+.portal-blue-header {
+  background-color: #0078d4;
+  background-image:
+    radial-gradient(circle at 15% -80%, rgb(255 255 255 / 20%), transparent 46%),
+    linear-gradient(100deg, #005a9e 0%, #0078d4 58%, #0099d8 100%);
+}
+
+.portal-blue-sidebar {
+  background-color: #008bd2;
+  background-image:
+    linear-gradient(rgb(255 255 255 / 5%) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(255 255 255 / 5%) 1px, transparent 1px),
+    radial-gradient(circle at 14% 18%, rgb(255 255 255 / 16%), transparent 24%),
+    linear-gradient(155deg, #0078d4 0%, #00a4df 54%, #0078d4 100%);
+  background-size: 42px 42px, 42px 42px, auto, auto;
+  box-shadow: inset -1px 0 rgb(0 0 0 / 8%);
+}
+
+.portal-blue-sidebar .portal-brand-mark {
+  border: 1px solid rgb(255 255 255 / 28%);
+  background: rgb(255 255 255 / 14%) !important;
+}
+
+.portal-blue-sidebar .text-slate-900,
+.portal-blue-sidebar .text-slate-600,
+.portal-blue-sidebar .text-slate-500,
+.portal-blue-sidebar .text-slate-400,
+.portal-blue-sidebar .text-ink,
+.portal-blue-sidebar .text-ink-dim,
+.portal-blue-sidebar .text-ink-muted,
+.portal-blue-sidebar .text-ink-faint {
+  color: rgb(255 255 255 / 84%) !important;
+}
+
+.portal-blue-sidebar .text-slate-900,
+.portal-blue-sidebar .text-ink { color: #ffffff !important; }
+.portal-blue-sidebar .text-slate-400,
+.portal-blue-sidebar .text-ink-faint { color: rgb(255 255 255 / 62%) !important; }
+
+.portal-blue-sidebar .bg-slate-200 { background-color: rgb(255 255 255 / 25%) !important; }
+.portal-blue-sidebar .border-slate-200,
+.portal-blue-sidebar .border-hairline { border-color: rgb(255 255 255 / 24%) !important; }
+
+.portal-blue-sidebar .bg-blue-50 {
+  background-color: rgb(255 255 255 / 18%) !important;
+  color: #ffffff !important;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 16%);
+}
+
+.portal-blue-sidebar .bg-blue-600 {
+  background-color: #ffffff !important;
+  color: #0067b8 !important;
+}
+
+.portal-blue-sidebar .hover\:bg-slate-100:hover,
+.portal-blue-sidebar .hover\:bg-white\/10:hover {
+  background-color: rgb(255 255 255 / 12%) !important;
+  color: #ffffff !important;
+}
+
+.portal-blue-sidebar button.border-slate-200 {
+  background: rgb(255 255 255 / 6%);
+  color: #ffffff !important;
+}
+
+.portal-blue-sidebar button.border-slate-200:hover {
+  background: rgb(255 255 255 / 15%) !important;
+}
+
+.portal-runtime-chip {
+  border-color: rgb(255 255 255 / 40%) !important;
+  background: rgb(255 255 255 / 14%) !important;
+  color: #ffffff !important;
+  backdrop-filter: blur(8px);
+}
+
+.portal-runtime-chip:hover { background: rgb(255 255 255 / 22%) !important; }
+.portal-runtime-chip strong,
+.portal-runtime-chip span { color: inherit !important; }
+.portal-runtime-chip.is-online > span:first-child { background: #55d98b !important; }
+.portal-runtime-chip.is-offline > span:first-child { background: #ffd166 !important; }
+
+@media (max-width: 640px) {
+  body { font-size: 13px; }
+}
+
+#root {
+  min-height: 100vh;
+}
+
+a,
+button {
+  -webkit-tap-highlight-color: transparent;
+}
+
+::selection {
+  background: rgba(0, 120, 212, 0.18);
+  color: #242424;
+}
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.16); border-radius: 10px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,0.24); }
+
+@media (min-width: 1024px) {
+  .projects-viewport > .grid > section > header,
+  .projects-viewport > .grid > section > nav,
+  .projects-viewport > .grid > section > .project-action-dock,
+  .projects-viewport > .grid > section > .border-b {
+    flex-shrink: 0;
+  }
+
+  .projects-viewport > .grid > section > .space-y-5 {
+    min-height: 0;
+    flex: 1 1 0%;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+  }
+
+  .projects-viewport > .grid > aside {
+    scrollbar-gutter: stable;
+  }
+}
+

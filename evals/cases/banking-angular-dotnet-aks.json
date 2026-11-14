@@ -1,0 +1,8 @@
+{
+  "id": "banking-angular-dotnet-aks",
+  "target_stack": "dotnet_angular",
+  "request": "Full-stack banking money transfer. Inputs:\n- sourceAccountId: required UUID\n- destinationAccountId: required UUID\n- amount: required decimal between 0.01 and 1000000\nOutputs:\n- transferReceipt: JSON receipt rendered with success, empty, validation, authorization, conflict, partial and error states\nRoles:\n- B2B_TRANSFER_USER\nIntegrations:\n- Azure Entra ID B2B\nNon-functional requirements:\n- Deploy to AKS with idempotency and optimistic concurrency",
+  "project_guidelines": "Use Dapper, never Entity Framework.\nUse xUnit for all .NET tests.",
+  "run_instructions": "Use NUnit as the default test framework.",
+  "expected": {"language": "csharp", "conflict_winner": "G-002", "deployment": "AKS"}
+}

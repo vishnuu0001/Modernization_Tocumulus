@@ -1,0 +1,135 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. BATCHPROC.
+       AUTHOR. MODERNIZATION-STUDIO.
+
+       ENVIRONMENT DIVISION.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT TRANSACTION-FILE
+               ASSIGN TO "sample-input.dat"
+               ORGANIZATION IS LINE SEQUENTIAL
+               FILE STATUS IS WS-IN-STATUS.
+           SELECT REPORT-FILE
+               ASSIGN TO "sample-output.dat"
+               ORGANIZATION IS LINE SEQUENTIAL
+               FILE STATUS IS WS-OUT-STATUS.
+
+       DATA DIVISION.
+       FILE SECTION.
+       FD  TRANSACTION-FILE.
+       COPY "TRANREC.cpy".
+       FD  REPORT-FILE.
+       COPY "RPTREC.cpy".
+
+       WORKING-STORAGE SECTION.
+       01  WS-IN-STATUS            PIC XX VALUE SPACES.
+       01  WS-OUT-STATUS           PIC XX VALUE SPACES.
+       01  WS-END-OF-FILE          PIC X VALUE "N".
+           88  END-OF-FILE         VALUE "Y".
+       01  WS-FAILED               PIC X VALUE "N".
+           88  PROCESSING-FAILED   VALUE "Y".
+       01  WS-AMOUNT               PIC S9(7)V99 COMP-3 VALUE ZERO.
+       01  WS-RECORD-COUNT         PIC 9(7) COMP-3 VALUE ZERO.
+       01  WS-ACCEPTED-COUNT       PIC 9(7) COMP-3 VALUE ZERO.
+       01  WS-REJECTED-COUNT       PIC 9(7) COMP-3 VALUE ZERO.
+       01  WS-CONTROL-TOTAL        PIC S9(11)V99 COMP-3 VALUE ZERO.
+
+       PROCEDURE DIVISION.
+       0000-MAIN.
+           PERFORM 1000-OPEN-FILES
+           IF NOT PROCESSING-FAILED
+               PERFORM 2000-PROCESS-RECORDS
+                   UNTIL END-OF-FILE OR PROCESSING-FAILED
+           END-IF
+           IF NOT PROCESSING-FAILED
+               PERFORM 3000-WRITE-CONTROL-TOTAL
+           END-IF
+           PERFORM 9000-CLOSE-FILES
+           IF PROCESSING-FAILED
+               MOVE 12 TO RETURN-CODE
+           ELSE
+               MOVE ZERO TO RETURN-CODE
+           END-IF
+           STOP RUN.
+
+       1000-OPEN-FILES.
+           OPEN INPUT TRANSACTION-FILE
+           IF WS-IN-STATUS NOT = "00"
+               DISPLAY "INPUT OPEN FAILED STATUS=" WS-IN-STATUS
+               SET PROCESSING-FAILED TO TRUE
+           END-IF
+           IF NOT PROCESSING-FAILED
+               OPEN OUTPUT REPORT-FILE
+               IF WS-OUT-STATUS NOT = "00"
+                   DISPLAY "OUTPUT OPEN FAILED STATUS=" WS-OUT-STATUS
+                   SET PROCESSING-FAILED TO TRUE
+               END-IF
+           END-IF.
+
+       2000-PROCESS-RECORDS.
+           READ TRANSACTION-FILE
+               AT END
+                   SET END-OF-FILE TO TRUE
+               NOT AT END
+                   IF WS-IN-STATUS NOT = "00"
+                       DISPLAY "INPUT READ FAILED STATUS=" WS-IN-STATUS
+                       SET PROCESSING-FAILED TO TRUE
+                   ELSE
+                       PERFORM 2100-VALIDATE-AND-WRITE
+                   END-IF
+           END-READ.
+
+       2100-VALIDATE-AND-WRITE.
+           ADD 1 TO WS-RECORD-COUNT
+           INITIALIZE REPORT-RECORD
+           MOVE "D" TO RP-RECORD-TYPE
+           MOVE TR-ACCOUNT TO RP-ACCOUNT
+           MOVE TR-REFERENCE TO RP-REFERENCE
+           IF TR-RECORD-TYPE = "D"
+              AND TR-ACCOUNT NOT = SPACES
+              AND TR-AMOUNT IS NUMERIC
+               MOVE TR-AMOUNT TO WS-AMOUNT
+               MOVE WS-AMOUNT TO RP-AMOUNT
+               MOVE "ACCEPTED" TO RP-STATUS
+               ADD 1 TO WS-ACCEPTED-COUNT
+               ADD WS-AMOUNT TO WS-CONTROL-TOTAL
+           ELSE
+               MOVE ZERO TO RP-AMOUNT
+               MOVE "REJECTED" TO RP-STATUS
+               ADD 1 TO WS-REJECTED-COUNT
+           END-IF
+           WRITE REPORT-RECORD
+           IF WS-OUT-STATUS NOT = "00"
+               DISPLAY "OUTPUT WRITE FAILED STATUS=" WS-OUT-STATUS
+               SET PROCESSING-FAILED TO TRUE
+           END-IF.
+
+       3000-WRITE-CONTROL-TOTAL.
+           INITIALIZE REPORT-RECORD
+           MOVE "T" TO RP-RECORD-TYPE
+           MOVE WS-RECORD-COUNT TO RP-RECORD-COUNT
+           MOVE WS-ACCEPTED-COUNT TO RP-ACCEPTED-COUNT
+           MOVE WS-REJECTED-COUNT TO RP-REJECTED-COUNT
+           MOVE WS-CONTROL-TOTAL TO RP-CONTROL-TOTAL
+           MOVE "CONTROL" TO RP-STATUS
+           WRITE REPORT-RECORD
+           IF WS-OUT-STATUS NOT = "00"
+               DISPLAY "TOTAL WRITE FAILED STATUS=" WS-OUT-STATUS
+               SET PROCESSING-FAILED TO TRUE
+           END-IF.
+
+       9000-CLOSE-FILES.
+           IF WS-IN-STATUS = "00" OR WS-IN-STATUS = "10"
+               CLOSE TRANSACTION-FILE
+               IF WS-IN-STATUS NOT = "00"
+                   DISPLAY "INPUT CLOSE FAILED STATUS=" WS-IN-STATUS
+                   SET PROCESSING-FAILED TO TRUE
+               END-IF
+           END-IF
+           IF WS-OUT-STATUS = "00"
+               CLOSE REPORT-FILE
+               IF WS-OUT-STATUS NOT = "00"
+                   DISPLAY "OUTPUT CLOSE FAILED STATUS=" WS-OUT-STATUS
+                   SET PROCESSING-FAILED TO TRUE
+               END-IF
+           END-IF.

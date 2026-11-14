@@ -1,0 +1,32 @@
+{
+  "id": "csharp-dotnet10",
+  "version": "1.0.0",
+  "languages": ["csharp"],
+  "frameworks": [".NET 10", "ASP.NET Core 10"],
+  "conventions": [
+    "Enable nullable and treat warnings as errors",
+    "Use clean API, application, domain, infrastructure, and contracts boundaries",
+    "Use async I/O with CancellationToken"
+  ],
+  "framework_practices": [
+    "Validate strongly typed Options at startup",
+    "Use FluentValidation at API boundaries",
+    "Use only the data-access technology requested by the client",
+    "Use Microsoft.Identity.Web for Microsoft Entra ID",
+    "Return RFC 9457 Problem Details"
+  ],
+  "testing": ["xUnit", "FluentAssertions", "Testcontainers"],
+  "lint_format": ["dotnet format", "Roslyn analyzers"],
+  "build_dependency": [
+    "Pin NuGet package versions",
+    "Generate and enforce packages.lock.json",
+    "dotnet restore --locked-mode",
+    "dotnet build -warnaserror",
+    "dotnet test"
+  ],
+  "security": [
+    "Policy-based deny-by-default authorization",
+    "Object-level authorization on protected resources",
+    "No hard-coded connection strings, credentials, or secrets"
+  ]
+}

@@ -1,0 +1,103 @@
+# syntax=docker/dockerfile:1.7
+FROM node:22-bookworm-slim AS frontend-build
+WORKDIR /src/frontend
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci --ignore-scripts
+COPY frontend/ ./
+RUN npm run build:production
+
+FROM node:20-bookworm-slim AS node20-runtime
+FROM node:22-bookworm-slim AS node-runtime
+FROM python:3.15.2-slim-bookworm AS python-runtime
+FROM eclipse-temurin:8-jdk-jammy AS java8-runtime
+FROM eclipse-temurin:11-jdk-jammy AS java11-runtime
+FROM eclipse-temurin:17-jdk-jammy AS java17-runtime
+FROM mcr.microsoft.com/dotnet/sdk:8.0 AS dotnet8-runtime
+FROM mcr.microsoft.com/dotnet/sdk:9.0 AS dotnet9-runtime
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS dotnet-runtime
+
+FROM ubuntu:24.04 AS runtime
+ARG DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && curl -fsSL https://packages.microsoft.com/config/ubuntu/24.04/packages-microsoft-prod.deb -o /tmp/packages-microsoft-prod.deb \
+    && dpkg -i /tmp/packages-microsoft-prod.deb \
+    && rm -f /tmp/packages-microsoft-prod.deb \
+    && apt-get update \
+    && ACCEPT_EULA=Y apt-get install -y --no-install-recommends \
+       ca-certificates curl git unzip \
+       openjdk-21-jdk-headless maven \
+       postgresql-client mariadb-client sqlite3 mssql-tools18 msodbcsql18 unixodbc \
+       gcc g++ make gnucobol \
+       libicu74 libssl3 zlib1g \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=node-runtime /usr/local/ /usr/local/
+COPY --from=python-runtime /usr/local/ /usr/local/
+COPY --from=node20-runtime /usr/local/ /opt/node/20/
+COPY --from=java8-runtime /opt/java/openjdk/ /opt/jdks/8/
+COPY --from=java11-runtime /opt/java/openjdk/ /opt/jdks/11/
+COPY --from=java17-runtime /opt/java/openjdk/ /opt/jdks/17/
+COPY --from=dotnet-runtime /usr/share/dotnet/ /usr/share/dotnet/
+# Include every .NET target major advertised by the stack catalog.
+COPY --from=dotnet8-runtime /usr/share/dotnet/ /usr/share/dotnet/
+COPY --from=dotnet9-runtime /usr/share/dotnet/ /usr/share/dotnet/
+RUN ln -s /usr/share/dotnet/dotnet /usr/local/bin/dotnet \
+    && python3 -m venv /opt/modernization-venv \
+    && groupadd --gid 10001 modernization \
+    && useradd --uid 10001 --gid 10001 --create-home --home-dir /home/modernization modernization
+
+ENV PATH="/opt/modernization-venv/bin:/opt/mssql-tools18/bin:/usr/local/bin:/usr/share/dotnet:${PATH}" \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHON_LAZY_IMPORTS=normal \
+    PYTHON_JIT=0 \
+    PYTHON_GIL=1 \
+    DOTNET_CLI_TELEMETRY_OPTOUT=1 \
+    DOTNET_NOLOGO=1 \
+    DOTNET_CLI_HOME=/tmp/dotnet \
+    XDG_RUNTIME_DIR=/tmp/dotnet-runtime-10001 \
+    MODERNIZATION_JAVA_HOMES=/opt/jdks/8:/opt/jdks/11:/opt/jdks/17:/usr/lib/jvm/java-21-openjdk-amd64 \
+    MODERNIZATION_NODE20_HOME=/opt/node/20 \
+    MODERNIZATION_NODE22_HOME=/usr/local \
+    NUGET_PACKAGES=/app/data/toolchains/nuget \
+    MAVEN_REPOSITORY_LOCAL=/app/data/toolchains/maven-repository \
+    HOST=0.0.0.0 \
+    PORT=18084
+
+WORKDIR /app
+COPY requirements.txt ./
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt
+
+COPY api/ ./api/
+COPY services/ ./services/
+COPY config/ ./config/
+COPY evals/ ./evals/
+COPY tools/ts-validate/package.json tools/ts-validate/package-lock.json ./tools/ts-validate/
+RUN cd tools/ts-validate && npm ci --ignore-scripts
+COPY --from=frontend-build /src/frontend/dist/ ./frontend/dist/
+COPY data/security/credential_public_key.pem ./security/credential_public_key.pem
+COPY docker/standalone-entrypoint.sh /usr/local/bin/modernization-entrypoint
+
+RUN chmod 0555 /usr/local/bin/modernization-entrypoint \
+    && mkdir -p /app/data/projects /app/data/logs /app/data/toolchains /app/data/runtime /tmp/modernization_jobs \
+    && chown -R modernization:modernization /app/data /tmp/modernization_jobs /home/modernization
+
+ARG APP_VERSION=1.0.12
+LABEL org.opencontainers.image.title="Modernization Studio" \
+      org.opencontainers.image.description="Standalone governed code-generation and modernization service" \
+      org.opencontainers.image.version="${APP_VERSION}" \
+      org.opencontainers.image.vendor="VindiVVis" \
+      org.opencontainers.image.licenses="Proprietary"
+USER 10001:10001
+ENV APP_VERSION=${APP_VERSION}
+EXPOSE 18084
+VOLUME ["/app/data"]
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=5 \
+  CMD python -c "import json,urllib.request; r=urllib.request.urlopen('http://127.0.0.1:18084/api/health',timeout=3); assert r.status == 200 and json.load(r).get('status') == 'ok'" || exit 1
+
+ENTRYPOINT ["/usr/local/bin/modernization-entrypoint"]
+CMD ["uvicorn", "api.server:app", "--host", "0.0.0.0", "--port", "18084", "--workers", "1", "--proxy-headers", "--forwarded-allow-ips", "*"]

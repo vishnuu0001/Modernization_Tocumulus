@@ -1,0 +1,8 @@
+{
+  "id": "python-fastapi-postgres",
+  "target_stack": "python_fastapi",
+  "request": "Python FastAPI service with PostgreSQL. Inputs:\n- customerEmail: required email maximum length 254\nOutputs:\n- customer: JSON customer response rendered with success, empty, validation and error states\nNon-functional requirements:\n- Pydantic v2, SQLAlchemy 2, Alembic, pytest, mypy strict and ruff",
+  "project_guidelines": "Use pytest for all tests.\nNever use `eval`.",
+  "run_instructions": "Use unittest as the model default.",
+  "expected": {"language": "python", "conflict_winner": "G-001", "deployment": "Docker"}
+}

@@ -1,0 +1,1 @@
+{"id":"r-analytics","version":"1.0.0","languages":["r"],"frameworks":["R 4.4+"],"conventions":["Functions over global mutation","Explicit package namespaces"],"testing":["testthat","Snapshot tests for reports"],"lint_format":["lintr","styler"],"build_dependency":["renv lockfile","R CMD check"],"security":["Validate uploaded datasets","No evaluated user expressions"]}

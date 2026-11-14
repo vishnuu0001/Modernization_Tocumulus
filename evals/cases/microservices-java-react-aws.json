@@ -1,0 +1,8 @@
+{
+  "id": "microservices-java-react-aws",
+  "target_stack": "spring_boot_react",
+  "request": "Java 21 Spring Boot 3 microservices with React and PostgreSQL deployed to AWS. Inputs:\n- orderId: required UUID\n- productId: required UUID\nOutputs:\n- order: JSON order response rendered for success, empty, error and partial states\nIntegrations:\n- PostgreSQL\n- AWS EKS\nNon-functional requirements:\n- transactional outbox, OpenTelemetry, Resilience4j and Testcontainers",
+  "project_guidelines": "Use JUnit 5 and Testcontainers.\nUse constructor injection only.",
+  "run_instructions": "Generate independently deployable services.",
+  "expected": {"language": "java", "deployment": "AWS EKS"}
+}
