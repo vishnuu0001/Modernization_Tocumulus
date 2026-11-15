@@ -722,7 +722,9 @@ _JAVA_IMPORT_DEPENDENCIES = {
 }
 
 
-def _java_inferred_dependencies(output: dict[str, str] | None) -> list[tuple[str, str, str | None]]:
+def _java_inferred_dependencies(
+    output: dict[str, str] | None, framework: str = "",
+) -> list[tuple[str, str, str | None]]:
     """Resolve Maven dependencies from imports emitted by the Java generator.
 
     The canonical POM remains service-owned, but it is no longer a closed,
@@ -735,10 +737,26 @@ def _java_inferred_dependencies(output: dict[str, str] | None) -> list[tuple[str
         content for path, content in output.items()
         if path.casefold().endswith(".java") and isinstance(content, str)
     )
+    framework_key = _java_framework_key(framework) if framework else ""
+
+    def compatible(coordinates: tuple[str, str, str | None]) -> bool:
+        group_id, artifact_id, _version = coordinates
+        dependency_framework = (
+            "spring" if group_id.startswith("org.springframework")
+            or "spring" in artifact_id else
+            "quarkus" if group_id.startswith("io.quarkus")
+            or artifact_id.startswith("quarkus-") else
+            "micronaut" if group_id.startswith("io.micronaut")
+            or artifact_id.startswith("micronaut-") else
+            ""
+        )
+        return not framework_key or not dependency_framework \
+            or dependency_framework == framework_key
+
     dependencies = {
         coordinates
         for package, coordinates in _JAVA_IMPORT_DEPENDENCIES.items()
-        if package in java_sources
+        if package in java_sources and compatible(coordinates)
     }
     for module in re.findall(
         r"\bimport\s+software\.amazon\.awssdk\.services\.([a-z0-9_]+)\.",
@@ -949,6 +967,7 @@ def _java_non_spring_pom(
     if framework == "quarkus":
         base = [("io.quarkus", "quarkus-rest-jackson", None),
                 ("io.quarkus", "quarkus-hibernate-validator", None),
+                ("io.quarkus", "quarkus-logging-json", None),
                 ("io.quarkus", "quarkus-junit5", None)]
         parent = """<dependencyManagement><dependencies><dependency><groupId>io.quarkus.platform</groupId><artifactId>quarkus-bom</artifactId><version>3.15.1</version><type>pom</type><scope>import</scope></dependency></dependencies></dependencyManagement>"""
         plugin = "<plugin><groupId>io.quarkus</groupId><artifactId>quarkus-maven-plugin</artifactId><version>3.15.1</version><extensions>true</extensions></plugin>"
@@ -1320,6 +1339,78 @@ def _ensure_java_operational_baseline(
         and "CONSOLE" in existing_logback
     ):
         output[logback_path] = _java_logback_configuration(application_name)
+
+
+def _ensure_quarkus_operational_baseline(
+    output: dict[str, str], source_root: str, resources_root: str, application_name: str,
+) -> None:
+    """Add framework-native global errors and durable JSON logs to Quarkus."""
+    prefix = source_root.rstrip("/") + "/"
+    has_mapper = any(
+        path.startswith(prefix) and path.endswith(".java")
+        and isinstance(content, str)
+        and "@Provider" in content and "ExceptionMapper<" in content
+        for path, content in output.items()
+    )
+    if not has_mapper:
+        package_name = _java_common_package(output, source_root, application_name)
+        handler_path = (
+            f"{prefix}{package_name.replace('.', '/')}/error/GlobalExceptionMapper.java"
+        )
+        output[handler_path] = textwrap.dedent(f"""\
+            package {package_name}.error;
+
+            import jakarta.ws.rs.core.MediaType;
+            import jakarta.ws.rs.core.Response;
+            import jakarta.ws.rs.ext.ExceptionMapper;
+            import jakarta.ws.rs.ext.Provider;
+            import java.util.Map;
+            import org.jboss.logging.Logger;
+
+            @Provider
+            public final class GlobalExceptionMapper implements ExceptionMapper<Throwable> {{
+                private static final Logger log = Logger.getLogger(GlobalExceptionMapper.class);
+
+                @Override
+                public Response toResponse(Throwable exception) {{
+                    log.error("Unhandled request failure", exception);
+                    return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                            .type(MediaType.APPLICATION_JSON_TYPE)
+                            .entity(Map.of(
+                                    "type", "about:blank",
+                                    "title", "Internal Server Error",
+                                    "status", 500,
+                                    "detail", "The request could not be completed"))
+                            .build();
+                }}
+            }}
+        """)
+
+    properties_path = f"{resources_root.rstrip('/')}/application.properties"
+    properties = output.get(properties_path, "")
+    properties = properties if isinstance(properties, str) else ""
+    required = {
+        "quarkus.log.console.enabled": "true",
+        "quarkus.log.console.json.enabled": "true",
+        "quarkus.log.file.enabled": "true",
+        "quarkus.log.file.path": "logs/application.json.log",
+        "quarkus.log.file.json.enabled": "true",
+        "quarkus.log.file.rotation.max-file-size": "20M",
+        "quarkus.log.file.rotation.max-backup-index": "30",
+        "quarkus.log.file.rotation.file-suffix": ".yyyy-MM-dd.gz",
+    }
+    existing_keys = {
+        match.group(1)
+        for match in re.finditer(r"(?m)^\s*([A-Za-z0-9_.\-\"]+)\s*=", properties)
+    }
+    additions = [
+        f"{key}={value}" for key, value in required.items()
+        if key not in existing_keys
+    ]
+    if additions:
+        output[properties_path] = (
+            properties.rstrip() + "\n" + "\n".join(additions) + "\n"
+        )
 
 
 def _java_reactor_pom(project_name: str, modules: list[str], java_version: str) -> str:
@@ -2214,6 +2305,13 @@ def _reconcile_java_generation_output(
                     f"{module_prefix}src/main/resources",
                     module,
                 )
+            elif module_framework == "quarkus":
+                _ensure_quarkus_operational_baseline(
+                    output,
+                    f"{module_prefix}src/main/java",
+                    f"{module_prefix}src/main/resources",
+                    module,
+                )
             module_output = {
                 path: content for path, content in output.items()
                 if path.startswith(module_prefix)
@@ -2225,7 +2323,9 @@ def _reconcile_java_generation_output(
                 if path.casefold().endswith(".java") and "/src/main/java/" in path and isinstance(value, str)
             )
             module_database = _java_database_key(target_db, module_output) if has_persistence else "none"
-            inferred_dependencies = _java_inferred_dependencies(module_output)
+            inferred_dependencies = _java_inferred_dependencies(
+                module_output, module_framework,
+            )
             if has_persistence and any("/src/test/java/" in path for path in module_output):
                 inferred_dependencies.append(("com.h2database", "h2", None))
             if "gateway" in module.casefold() and any(
@@ -2280,7 +2380,7 @@ def _reconcile_java_generation_output(
         output[canonical_pom] = _java_backend_pom(
             project_name,
             f"Java {java_version} {framework}",
-            _java_inferred_dependencies(output),
+            _java_inferred_dependencies(output, framework),
             db_target=database,
             main_class=main_class,
         )

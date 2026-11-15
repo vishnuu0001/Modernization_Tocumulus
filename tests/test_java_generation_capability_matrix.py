@@ -3,10 +3,15 @@ import xml.etree.ElementTree as ET
 
 from services.modernizer.build_artifacts import (
     _backend_manifest_files,
+    _java_inferred_dependencies,
     _reconcile_java_generation_output,
 )
 from services.modernizer.domain_generators.stack_signals import _detect_stack_signals
-from services.modernizer.prompt_pipeline import _pf_generate_infra_scaffold, _pf_resolve_target
+from services.modernizer.prompt_pipeline import (
+    _java_generation_standards_report,
+    _pf_generate_infra_scaffold,
+    _pf_resolve_target,
+)
 from services.modernizer.scaffolds.java import _gen_java_scaffold, _spring_gateway_config
 from services.validators import validate_file
 
@@ -83,6 +88,72 @@ class JavaGenerationCapabilityMatrixTests(unittest.TestCase):
         pom = output["Demo/backend/pom.xml"]
         self.assertIn("quarkus-jdbc-mysql", pom)
         self.assertNotIn("spring-boot-starter-parent", pom)
+
+    def test_quarkus_reconciliation_isolates_framework_and_adds_operational_baseline(self):
+        output = {}
+        for module in ("auth-service", "customer-service"):
+            domain = module.removesuffix("-service").title()
+            package = module.removesuffix("-service").replace("-", "")
+            root = f"Demo/backend/{module}"
+            output[f"{root}/src/main/java/com/example/{package}/{domain}Resource.java"] = (
+                f"package com.example.{package};\n"
+                "import jakarta.ws.rs.GET;\n"
+                "import jakarta.ws.rs.Path;\n"
+                f"@Path(\"/{package}\") public class {domain}Resource {{ @GET public String get() {{ return \"ok\"; }} }}\n"
+            )
+            output[f"{root}/src/main/java/com/example/{package}/{domain}Entity.java"] = (
+                f"package com.example.{package};\n"
+                "import jakarta.persistence.Entity;\n"
+                f"@Entity public class {domain}Entity {{}}\n"
+            )
+            output[f"{root}/src/main/java/com/example/{package}/{domain}Repository.java"] = (
+                f"package com.example.{package};\n"
+                "import io.quarkus.hibernate.orm.panache.PanacheRepository;\n"
+                f"public class {domain}Repository implements PanacheRepository<{domain}Entity> {{}}\n"
+            )
+
+        _reconcile_java_generation_output(
+            output, "Demo", {"backend_tech": "Java 21 Quarkus", "db_target": "postgres"},
+        )
+
+        for module in ("auth-service", "customer-service"):
+            root = f"Demo/backend/{module}"
+            pom = output[f"{root}/pom.xml"]
+            self.assertIn("quarkus-maven-plugin", pom)
+            self.assertIn("quarkus-logging-json", pom)
+            self.assertIn("quarkus-hibernate-orm-panache", pom)
+            self.assertNotIn("org.springframework", pom)
+            self.assertTrue(any(
+                path.startswith(f"{root}/src/main/java/")
+                and path.endswith("/error/GlobalExceptionMapper.java")
+                for path in output
+            ))
+            properties = output[f"{root}/src/main/resources/application.properties"]
+            self.assertIn("quarkus.log.console.json.enabled=true", properties)
+            self.assertIn("quarkus.log.file.json.enabled=true", properties)
+            self.assertIn("quarkus.log.file.path=logs/application.json.log", properties)
+            self.assertIn("quarkus.log.file.rotation.max-file-size=20M", properties)
+
+        report = _java_generation_standards_report(output)
+        self.assertTrue(report["passed"], report["diagnostics"])
+        self.assertEqual({"quarkus"}, {item["framework"] for item in report["modules"]})
+
+    def test_framework_scoped_dependency_inference_rejects_cross_framework_leakage(self):
+        source = {
+            "Entity.java": (
+                "import jakarta.persistence.Entity;\n"
+                "import io.quarkus.hibernate.orm.panache.PanacheRepository;\n"
+                "import org.springframework.data.jpa.repository.JpaRepository;\n"
+            ),
+        }
+
+        quarkus = _java_inferred_dependencies(source, "quarkus")
+        spring = _java_inferred_dependencies(source, "spring")
+
+        self.assertIn(("io.quarkus", "quarkus-hibernate-orm-panache", None), quarkus)
+        self.assertFalse(any(group.startswith("org.springframework") for group, _, _ in quarkus))
+        self.assertIn(("org.springframework.boot", "spring-boot-starter-data-jpa", None), spring)
+        self.assertFalse(any(group.startswith("io.quarkus") for group, _, _ in spring))
 
     def test_fallback_scaffold_uses_shared_capability_resolver(self):
         output = {}

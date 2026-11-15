@@ -202,56 +202,122 @@ def _java_generation_standards_report(output: dict[str, str]) -> dict:
             if path.replace("\\", "/").startswith(module + "/src/main/java/")
         }
         pom = output.get(f"{module}/pom.xml", "")
-        spring = "spring-boot-starter" in str(pom) or any(
-            "org.springframework" in content for content in module_sources.values()
+        pom_text = str(pom)
+        framework = (
+            "quarkus" if "quarkus-maven-plugin" in pom_text or "quarkus-bom" in pom_text else
+            "micronaut" if "micronaut-maven-plugin" in pom_text or "micronaut-parent" in pom_text else
+            "spring" if "spring-boot-starter" in pom_text or "spring-boot-maven-plugin" in pom_text else
+            "java"
         )
-        if not spring:
-            continue
-        applications = [
-            path for path, content in module_sources.items()
-            if "@SpringBootApplication" in content
-            and re.search(r"\bpublic\s+static\s+void\s+main\s*\(", content)
-        ]
-        advice = [
-            path for path, content in module_sources.items()
-            if "@RestControllerAdvice" in content
-        ]
-        advice_logged = any(
-            "LoggerFactory.getLogger" in module_sources[path]
-            and re.search(r"\blog\.error\s*\([^;]*exception\s*\)", module_sources[path], re.DOTALL)
-            and "@ExceptionHandler(Exception.class)" in module_sources[path]
-            and "ProblemDetail" in module_sources[path]
-            for path in advice
-        )
-        log_configs = [
-            path for path, content in output.items()
-            if path.replace("\\", "/").startswith(module + "/src/main/resources/")
-            and Path(path).name.casefold() in {"logback-spring.xml", "logback.xml"}
-            and isinstance(content, str)
-            and "RollingFileAppender" in content
-            and "application.json.log" in content
-            and "CONSOLE" in content
-        ]
-        if not applications:
-            diagnostics.append(f"Spring module has no executable Java application entry point: {module}")
-        if not advice:
-            diagnostics.append(f"Spring module has no centralized @RestControllerAdvice: {module}")
-        elif not advice_logged:
-            diagnostics.append(
-                f"Spring exception advice must return ProblemDetail and log unexpected exceptions with SLF4J: {module}"
+        applications: list[str] = []
+        advice: list[str] = []
+        log_configs: list[str] = []
+        if framework == "spring":
+            applications = [
+                path for path, content in module_sources.items()
+                if "@SpringBootApplication" in content
+                and re.search(r"\bpublic\s+static\s+void\s+main\s*\(", content)
+            ]
+            advice = [
+                path for path, content in module_sources.items()
+                if "@RestControllerAdvice" in content
+            ]
+            advice_logged = any(
+                "LoggerFactory.getLogger" in module_sources[path]
+                and re.search(
+                    r"\blog\.error\s*\([^;]*exception\s*\)",
+                    module_sources[path], re.DOTALL,
+                )
+                and "@ExceptionHandler(Exception.class)" in module_sources[path]
+                and "ProblemDetail" in module_sources[path]
+                for path in advice
             )
-        if not log_configs:
-            diagnostics.append(
-                f"Spring module has no console plus rolling structured application log capture: {module}"
+            log_configs = [
+                path for path, content in output.items()
+                if path.replace("\\", "/").startswith(module + "/src/main/resources/")
+                and Path(path).name.casefold() in {"logback-spring.xml", "logback.xml"}
+                and isinstance(content, str)
+                and "RollingFileAppender" in content
+                and "application.json.log" in content
+                and "CONSOLE" in content
+            ]
+            if not applications:
+                diagnostics.append(
+                    f"Spring module has no executable Java application entry point: {module}"
+                )
+            if not advice:
+                diagnostics.append(
+                    f"Spring module has no centralized @RestControllerAdvice: {module}"
+                )
+            elif not advice_logged:
+                diagnostics.append(
+                    "Spring exception advice must return ProblemDetail and log unexpected "
+                    f"exceptions with SLF4J: {module}"
+                )
+            if not log_configs:
+                diagnostics.append(
+                    "Spring module has no console plus rolling structured application log "
+                    f"capture: {module}"
+                )
+        elif framework == "quarkus":
+            if "org.springframework" in pom_text:
+                diagnostics.append(
+                    f"Quarkus module contains incompatible Spring dependencies: {module}"
+                )
+            if "quarkus-maven-plugin" in pom_text:
+                applications = [f"{module}/pom.xml#quarkus-maven-plugin"]
+            advice = [
+                path for path, content in module_sources.items()
+                if "@Provider" in content and "ExceptionMapper<" in content
+            ]
+            advice_logged = any(
+                "org.jboss.logging.Logger" in module_sources[path]
+                and re.search(
+                    r"\blog\.error\s*\([^;]*exception\s*\)",
+                    module_sources[path], re.DOTALL,
+                )
+                and "Response.Status.INTERNAL_SERVER_ERROR" in module_sources[path]
+                for path in advice
             )
+            properties_path = f"{module}/src/main/resources/application.properties"
+            properties = output.get(properties_path, "")
+            if (
+                "quarkus-logging-json" in pom_text
+                and isinstance(properties, str)
+                and "quarkus.log.console.json.enabled=true" in properties
+                and "quarkus.log.file.enabled=true" in properties
+                and "quarkus.log.file.json.enabled=true" in properties
+                and "quarkus.log.file.path=logs/application.json.log" in properties
+                and "quarkus.log.file.rotation.max-file-size=" in properties
+            ):
+                log_configs = [properties_path]
+            if not applications:
+                diagnostics.append(f"Quarkus module has no executable Maven bootstrap: {module}")
+            if not advice:
+                diagnostics.append(f"Quarkus module has no centralized ExceptionMapper: {module}")
+            elif not advice_logged:
+                diagnostics.append(
+                    f"Quarkus ExceptionMapper must log unexpected exceptions and return JSON: {module}"
+                )
+            if not log_configs:
+                diagnostics.append(
+                    "Quarkus module has no console plus rolling JSON application log capture: "
+                    f"{module}"
+                )
+        else:
+            applications = [
+                path for path, content in module_sources.items()
+                if re.search(r"\bpublic\s+static\s+void\s+main\s*\(", content)
+            ]
         modules.append({
             "module": module,
+            "framework": framework,
             "application_entry_points": applications,
             "exception_advice": advice,
             "structured_log_configuration": log_configs,
         })
     if not modules:
-        diagnostics.append("Java target has no Maven-owned Spring Boot module")
+        diagnostics.append("Java target has no Maven-owned runtime module")
     return {
         "target_language": "java",
         "passed": not diagnostics,
@@ -262,8 +328,8 @@ def _java_generation_standards_report(output: dict[str, str]) -> dict:
             "Java-only backend source under Maven-owned source roots",
             "Java package declaration on every production source",
             "No System.out/System.err or printStackTrace",
-            "Executable Spring Boot entry point per module",
-            "Central ProblemDetail exception advice with correlation-aware SLF4J logging",
+            "Framework-native executable bootstrap per module",
+            "Framework-native centralized exception handling with structured logging",
             "Console and rolling structured JSON application log capture",
         ],
         "diagnostics": diagnostics,

@@ -285,12 +285,12 @@ def _gen_java_scaffold(
         path: content for path, content in output.items() if path.startswith(f"{base}/")
     }
     from ..build_artifacts import _java_inferred_dependencies
-    output[f"{base}/pom.xml"] = _java_backend_pom(
-        f"{domain}-service", backend_tech,
-        _java_inferred_dependencies(service_sources), db_target=db_target,
-    )
     framework = (
         "quarkus" if "quarkus" in bt else "micronaut" if "micronaut" in bt else "spring"
+    )
+    output[f"{base}/pom.xml"] = _java_backend_pom(
+        f"{domain}-service", backend_tech,
+        _java_inferred_dependencies(service_sources, framework), db_target=db_target,
     )
     config_name, config = _java_runtime_config(framework, db_target, domain)
     for path in list(output):
