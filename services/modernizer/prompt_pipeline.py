@@ -1447,7 +1447,11 @@ def _pf_resolve_target(user_prompt: str, target_stack: str, custom_stack_desc: s
     else:
         if target_stack not in TARGET_STACKS:
             raise ValueError(f"Unknown target stack: {target_stack}")
-        target = TARGET_STACKS[target_stack]
+        # Registry entries are process-global catalog metadata. Stack-signal
+        # application is request-specific, so every resolution must start
+        # from an isolated copy; otherwise one prompt can permanently change
+        # the language/name/version shown and generated for later jobs.
+        target = dict(TARGET_STACKS[target_stack])
 
     explicit_signals = _detect_stack_signals(user_prompt)
     explicit_backend = str(explicit_signals.get("backend") or "").casefold()
@@ -1458,7 +1462,25 @@ def _pf_resolve_target(user_prompt: str, target_stack: str, custom_stack_desc: s
         "typescript" if any(name in explicit_backend for name in ("nestjs", "express", "node.js")) else
         ""
     )
-    if requested_language and requested_language != str(target.get("language") or "").casefold():
+    current_language = str(target.get("language") or "").casefold()
+    # A backend framework does not necessarily define the project's primary
+    # generation language. Spring Boot is valid Kotlin, and a Flutter + .NET
+    # preset deliberately uses Dart as the primary/mobile language while the
+    # API is C#. Treat these as compatible composite targets instead of
+    # silently rebasing the selected preset to Java or a plain .NET preset.
+    compatible_backend_languages = {
+        "java": {"java", "kotlin"},
+        "csharp": {"csharp", "dart"} if "flutter" in str(target.get("frontend_tech") or "").casefold() else {"csharp"},
+        "typescript": {"typescript", "javascript"},
+        "python": {"python"},
+    }
+    requested_conflicts = (
+        requested_language
+        and current_language not in compatible_backend_languages.get(
+            requested_language, {requested_language},
+        )
+    )
+    if requested_conflicts:
         canonical_stack = (
             "python_django" if "django" in explicit_backend else
             "python_fastapi" if "fastapi" in explicit_backend else
@@ -1482,7 +1504,7 @@ def _pf_resolve_target(user_prompt: str, target_stack: str, custom_stack_desc: s
                 "db_target": "", "language": "python",
             }
         else:
-            target = TARGET_STACKS[canonical_stack]
+            target = dict(TARGET_STACKS[canonical_stack])
 
     stack_signals = _merge_target_capabilities(target, explicit_signals)
     # A custom target with no manual description is explicitly prompt-inferred.
@@ -7661,13 +7683,14 @@ def _default_file_list(target: dict, project_name: str) -> list[str]:
     lang = target.get("language", "csharp")
     ns   = project_name
     if lang == "java":
+        package_path = re.sub(r"[^a-z0-9]+", "", ns.casefold()) or "modernizedapp"
         return [
-            f"src/main/java/{ns}/Application.java",
-            f"src/main/java/{ns}/model/{ns}Entity.java",
-            f"src/main/java/{ns}/repository/{ns}Repository.java",
-            f"src/main/java/{ns}/service/{ns}Service.java",
-            f"src/main/java/{ns}/controller/{ns}Controller.java",
-            "src/main/resources/application.yml",
+            f"backend/src/main/java/{package_path}/Application.java",
+            f"backend/src/main/java/{package_path}/model/{ns}Entity.java",
+            f"backend/src/main/java/{package_path}/repository/{ns}Repository.java",
+            f"backend/src/main/java/{package_path}/service/{ns}Service.java",
+            f"backend/src/main/java/{package_path}/controller/{ns}Controller.java",
+            "backend/src/main/resources/application.yml",
             "pom.xml",
         ]
     elif lang == "javascript" and "database migration only" in str(target.get("backend_tech") or "").casefold():
@@ -7702,6 +7725,7 @@ def _default_file_list(target: dict, project_name: str) -> list[str]:
             f"app/routers/{ns.lower()}.py",
             "app/database.py",
             "app/config.py",
+            "tests/test_health.py",
             "alembic.ini",
             "requirements.txt",
             "Dockerfile",
@@ -7721,6 +7745,7 @@ def _default_file_list(target: dict, project_name: str) -> list[str]:
         ]
     elif lang == "csharp":
         return [
+            "backend/Program.cs",
             f"Services/{ns}Service/{ns}Service.csproj",
             f"Services/{ns}Service/Program.cs",
             f"Services/{ns}Service/Models/{ns}.cs",

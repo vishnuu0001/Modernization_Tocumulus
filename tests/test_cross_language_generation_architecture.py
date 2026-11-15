@@ -101,6 +101,8 @@ class CrossLanguageGenerationArchitectureTests(unittest.TestCase):
                     tooling_version,
                     package["devDependencies"]["@angular-devkit/build-angular"],
                 )
+                expected_zone = "~0.15.0" if major >= 19 else "~0.14.10"
+                self.assertEqual(expected_zone, package["dependencies"]["zone.js"])
                 self.assertNotIn("test", package["scripts"])
 
     def test_react_fallback_uses_vite_runtime_configuration(self):

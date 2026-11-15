@@ -201,7 +201,7 @@ def generate_polyglot_project(language: str, root_ns: str, domain: str, target: 
         return {
             f"{base}/requirements.txt": (
                 "Django==5.1.3\ndjangorestframework==3.15.2\n"
-                "dj-database-url==2.2.0\npsycopg[binary]==3.2.3\npytest-django==4.9.0\n"
+                "dj-database-url==2.2.0\npsycopg[binary]==3.3.9\npytest-django==4.9.0\n"
             ),
             f"{base}/manage.py": (
                 "#!/usr/bin/env python\nimport os\nfrom django.core.management import execute_from_command_line\n"
@@ -248,6 +248,7 @@ def generate_polyglot_project(language: str, root_ns: str, domain: str, target: 
             if framework == "ktor" else
             'kotlin("jvm") version "2.0.21"\n    kotlin("plugin.spring") version "2.0.21"\n    id("org.springframework.boot") version "3.3.4"\n    id("io.spring.dependency-management") version "1.1.6"'
         )
+        application_config = 'application { mainClass.set("AppKt") }\n' if framework == "ktor" else ""
         source = (
             'import io.ktor.server.application.*\nimport io.ktor.server.engine.*\nimport io.ktor.server.netty.*\nimport io.ktor.server.response.*\nimport io.ktor.server.routing.*\nfun main() { embeddedServer(Netty, port=8080) { routing { get("/health") { call.respondText("ok") } } }.start(wait=true) }\n'
             if framework == "ktor" else
@@ -255,7 +256,7 @@ def generate_polyglot_project(language: str, root_ns: str, domain: str, target: 
         )
         return {
             f"{base}/settings.gradle.kts": f'rootProject.name = "{app}-{_slug(domain)}"\n',
-            f"{base}/build.gradle.kts": f'plugins {{\n    {plugins}\n}}\nrepositories {{ mavenCentral() }}\ndependencies {{\n    {dependency}\n    testImplementation(kotlin("test"))\n}}\napplication {{ mainClass.set("AppKt") }}\ntasks.test {{ useJUnitPlatform() }}\n',
+            f"{base}/build.gradle.kts": f'plugins {{\n    {plugins}\n}}\nrepositories {{ mavenCentral() }}\ndependencies {{\n    {dependency}\n    testImplementation(kotlin("test"))\n}}\n{application_config}tasks.test {{ useJUnitPlatform() }}\n',
             f"{base}/src/main/kotlin/App.kt": source,
             f"{base}/src/test/kotlin/AppTest.kt": 'import kotlin.test.Test\nimport kotlin.test.assertTrue\nclass AppTest { @Test fun health() = assertTrue(true) }\n',
         }
@@ -269,7 +270,7 @@ def generate_polyglot_project(language: str, root_ns: str, domain: str, target: 
         return files
     if lang == "php":
         files = {
-            f"{base}/composer.json": '{"name":"modernized/app","require":{"php":"^8.2","laravel/framework":"^11.0"},"require-dev":{"phpunit/phpunit":"^11.0"},"autoload":{"psr-4":{"App\\\\":"app/"}},"scripts":{"test":"phpunit"}}\n',
+            f"{base}/composer.json": '{"name":"modernized/app","require":{"php":"^8.2","laravel/framework":"^12.0"},"require-dev":{"phpunit/phpunit":"^11.0"},"autoload":{"psr-4":{"App\\\\":"app/"}},"scripts":{"test":"phpunit"}}\n',
             f"{base}/artisan": '#!/usr/bin/env php\n<?php\nrequire __DIR__."/vendor/autoload.php";\n',
             f"{base}/bootstrap/app.php": '<?php\nuse Illuminate\\Foundation\\Application;\nreturn Application::configure(basePath: dirname(__DIR__))->withRouting(api: __DIR__."/../routes/api.php")->create();\n',
             f"{base}/routes/api.php": '<?php\nuse Illuminate\\Support\\Facades\\Route;\nRoute::get("/health", fn()=>["status"=>"ok","service"=>"' + name + '"]);\n',

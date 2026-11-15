@@ -240,7 +240,9 @@ def _frontend_scaffold_files(frontend_tech: str, project_name: str, is_azure_aut
         typescript_version = typescript_versions[angular_major]
         angular_version = framework_versions[angular_major]
         tooling_version = tooling_versions[angular_major]
-        zone_version = "^0.15.0" if angular_major >= 20 else "^0.14.0"
+        # Angular 19 moved its zone.js peer to ~0.15; leaving it on 0.14 makes
+        # npm reject the dependency tree before TypeScript compilation.
+        zone_version = "~0.15.0" if angular_major >= 19 else "~0.14.10"
         deps = {
             "@angular/animations": angular_version, "@angular/common": angular_version,
             "@angular/compiler": angular_version, "@angular/core": angular_version,
@@ -558,9 +560,9 @@ def _backend_manifest_files(lang: str, project_name: str, backend_tech: str,
     if lang == "python":
         tech = (backend_tech or "").casefold()
         if "django" in tech:
-            reqs = ["Django", "djangorestframework", "dj-database-url"]
+            reqs = ["Django", "djangorestframework", "dj-database-url", "pytest", "pytest-django"]
         else:
-            reqs = ["fastapi", "uvicorn[standard]", "pydantic", "sqlalchemy[asyncio]"]
+            reqs = ["fastapi", "uvicorn[standard]", "pydantic", "sqlalchemy[asyncio]", "pytest", "httpx"]
         database_packages = {
             "postgres": ["psycopg[binary]" if "django" in tech else "asyncpg"],
             "mysql": ["mysqlclient" if "django" in tech else "asyncmy"],

@@ -29,6 +29,7 @@ import json
 import os
 import importlib.util
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -78,6 +79,55 @@ _DEPENDENCY_COMPATIBILITY_KEY = "<dependency-compatibility>"
 _INSTALL_KEY = "<install>"
 _PACKAGE_JSON = "package.json"
 _CLANG = "clang"
+
+
+def _run_process_tree(
+    command: list[str], *, cwd: str, timeout: int, env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Run a tool with timeout cleanup that includes launcher descendants.
+
+    On Windows, package-manager ``.bat``/``.cmd`` launchers can exit while a
+    Ruby, Node, Java, or PHP child still owns the captured stdout/stderr pipe.
+    ``subprocess.run(..., timeout=...)`` kills only the launcher and can then
+    wait forever for that orphaned child. Start a distinct process group and
+    terminate the exact tree before collecting output so the build gate always
+    returns a bounded diagnostic.
+    """
+    windows_flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+    process = subprocess.Popen(
+        command,
+        cwd=cwd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        creationflags=windows_flags,
+        start_new_session=os.name != "nt",
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+        else:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        try:
+            stdout, stderr = process.communicate(timeout=15)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            stdout, stderr = process.communicate()
+        raise subprocess.TimeoutExpired(
+            command, timeout, output=stdout or exc.output, stderr=stderr or exc.stderr,
+        ) from exc
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 _CLANG_CPP = "clang++"
 _MISSING_MANIFEST = "missing-manifest"
 _MISSING_TOOLCHAIN = "missing-toolchain"
@@ -1330,8 +1380,8 @@ def _run_npm_subprocess_with_retry(
     while attempt <= _TOOLCHAIN_CRASH_RETRIES:
         attempt += 1
         try:
-            proc = subprocess.run(
-                command, capture_output=True, text=True, timeout=timeout, cwd=str(project_dir), env=env,
+            proc = _run_process_tree(
+                command, timeout=timeout, cwd=str(project_dir), env=env,
             )
         except subprocess.TimeoutExpired as exc:
             return BuildResult(False, _NPM_TSC, {timeout_key: [timeout_message]}, str(exc))
@@ -1825,9 +1875,9 @@ def _run_manifest_build(
         if not command_args:
             continue
         try:
-            proc = subprocess.run(
+            proc = _run_process_tree(
                 [executable, *command_args], cwd=str(manifest.parent),
-                capture_output=True, text=True, timeout=_BUILD_TIMEOUT,
+                timeout=_BUILD_TIMEOUT,
                 env=(_java_build_environment(manifest) if tool == "gradle" else executable_environment(executable)),
             )
         except (OSError, subprocess.SubprocessError) as exc:
@@ -1983,7 +2033,14 @@ def _execute_source_commands(
 
 # Function: _python_test_commands
 def _python_test_commands(executable: str, tmp_dir: Path) -> list[list[str]] | None:
-    test_files = list(tmp_dir.rglob("test*.py"))
+    ignored_parts = {
+        ".modernization-venv", ".venv", "venv", "site-packages",
+        "node_modules", "vendor", "dist", "build",
+    }
+    test_files = [
+        path for path in tmp_dir.rglob("test*.py")
+        if not ignored_parts.intersection(part.casefold() for part in path.parts)
+    ]
     if not test_files:
         return None
     # The Python standards pack selects pytest. Detect pytest-style functions
@@ -1992,7 +2049,20 @@ def _python_test_commands(executable: str, tmp_dir: Path) -> list[list[str]] | N
     test_contents = [path.read_text(encoding="utf-8", errors="ignore") for path in test_files]
     uses_unittest = any("unittest.TestCase" in content for content in test_contents)
     if not uses_unittest and any(re.search(r"(?m)^(?:async\s+)?def\s+test_", content) for content in test_contents):
-        return [[executable, "-m", "pytest", "-q"]]
+        project_roots = sorted({
+            Path(path.relative_to(tmp_dir).parts[0])
+            if len(path.relative_to(tmp_dir).parts) > 1 else Path(".")
+            for path in test_files
+        })
+        pytest_script = (
+            "import os,sys,pytest;"
+            "os.chdir(sys.argv[1]);sys.path.insert(0,os.getcwd());"
+            "raise SystemExit(pytest.main(['-q']))"
+        )
+        return [
+            [executable, "-c", pytest_script, str(project_root)]
+            for project_root in project_roots
+        ]
     test_roots = sorted({path.parent.relative_to(tmp_dir) for path in test_files})
     discovery_script = (
         "import os,sys,unittest;"
@@ -2070,7 +2140,12 @@ def _run_source_checks(tmp_dir: Path, language: str) -> BuildResult:
                 {_BUILD_KEY: ["Python project validation requires generated unittest test files"]},
             )
         commands.extend(test_commands)
-    return _execute_source_commands(commands, tmp_dir, language)
+    execution_root = tmp_dir
+    if language == "go":
+        modules = sorted(tmp_dir.rglob("go.mod"))
+        if len(modules) == 1:
+            execution_root = modules[0].parent
+    return _execute_source_commands(commands, execution_root, language)
 
 
 # Function: _combine_build_results

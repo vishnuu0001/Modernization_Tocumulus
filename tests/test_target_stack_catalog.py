@@ -12,11 +12,45 @@ import unittest
 from api.server import target_stacks
 from api.server import _stack_readiness
 from services.modernizer.prompt_pipeline import _pf_resolve_target
-from services.modernizer.target_config import _infer_target_language
+from services.modernizer.target_config import TARGET_STACKS, _infer_target_language
 from services.validators import _resolve_sql_dialect
 
 
 class TargetStackCatalogTests(unittest.TestCase):
+    def test_every_guided_prompt_preserves_its_advertised_primary_language(self):
+        from api.server import _ADDITIONAL_STACK_PRESETS
+
+        expected = {
+            "C": "c", "C++": "cpp", "C#": "csharp", "Java": "java",
+            "TypeScript": "typescript", "Python": "python", "Go": "go",
+            "PHP": "php", "Ruby": "ruby", "Rust": "rust", "Swift": "swift",
+            "Kotlin": "kotlin", "Shell": "shell", "R": "r", "Scala": "scala",
+            "Clojure": "clojure", "Haskell": "haskell", "Common Lisp": "lisp",
+            "Elixir": "elixir", "Erlang": "erlang", "Dart": "dart",
+            "Dart / C#": "dart", "Julia": "julia", "SQL": "sql",
+            "PL/SQL": "sql", "T-SQL": "sql", "YAML": "yaml", "JSON": "json",
+            "TOML": "toml", "XML": "xml", "Markdown": "markdown",
+            "GraphQL": "graphql", "Protobuf": "protobuf", "Dockerfile": "dockerfile",
+            "CloudFormation": "cloudformation", "Kubernetes manifests": "kubernetes",
+            "Helm": "helm", "Ansible": "ansible", "Jenkinsfile": "jenkinsfile",
+            "GitHub Actions": "github_actions",
+        }
+        native_ids = set(TARGET_STACKS)
+        for stack_id, name, _category, language, backend, frontend, database in _ADDITIONAL_STACK_PRESETS:
+            if stack_id in native_ids or language in {"ABAP", "Apex"}:
+                continue
+            description = (
+                f"Preset: {name}; Language: {language}; Backend: {backend}; "
+                f"Frontend: {frontend}; Database: {database}"
+            )
+            prompt = f"Create a production-ready application using {backend}, {frontend}, and {database}."
+            with self.subTest(stack=stack_id):
+                target, _signals, _full_stack, resolved, _requirements = _pf_resolve_target(
+                    prompt, "custom", description,
+                )
+                self.assertEqual(expected[language], resolved)
+                self.assertEqual(expected[language], target["language"])
+
     def test_angular_readiness_uses_version_compatible_node_runtime(self):
         tools = {
             "npm": {"ready": True},

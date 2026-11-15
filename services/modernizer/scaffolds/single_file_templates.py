@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import logging
+import json
+import re
 import textwrap
 
 logger = logging.getLogger(__name__)
@@ -21,6 +23,26 @@ def _tpl_python(fname: str, user_prompt: str, project_name: str, offline_note: s
     stem       = base_name.rsplit(".", 1)[0]
     class_name = "".join(w.capitalize() for w in stem.replace("-", "_").split("_")) or project_name
     entity     = class_name.rstrip("s") or "Entity"
+
+    if base_name.startswith("test_"):
+        return textwrap.dedent("""\
+            import os
+
+            os.environ.setdefault(
+                "DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost/test"
+            )
+
+            from fastapi.testclient import TestClient
+            from app.main import app
+
+            client = TestClient(app)
+
+
+            def test_health_check() -> None:
+                response = client.get("/health")
+                assert response.status_code == 200
+                assert response.json()["status"] == "ok"
+        """)
 
     if "main" in base_name:
         return textwrap.dedent(f"""\
@@ -348,6 +370,18 @@ def _tpl_python(fname: str, user_prompt: str, project_name: str, offline_note: s
 # Function: _tpl_csharp
 def _tpl_csharp(class_name: str, ns: str, user_prompt: str, offline_note: str, target: dict) -> str:
     """Return a ready-to-use C# file template based on the class name role."""
+    if class_name == "Program":
+        return textwrap.dedent(f"""\
+            // {offline_note}
+            var builder = WebApplication.CreateBuilder(args);
+            builder.Services.AddProblemDetails();
+            builder.Services.AddHealthChecks();
+            var app = builder.Build();
+            app.UseExceptionHandler();
+            app.MapHealthChecks("/health");
+            app.MapGet("/api/status", () => Results.Ok(new {{ status = "ok", service = "{ns}" }}));
+            app.Run();
+        """)
     if "Controller" in class_name or "Endpoint" in class_name:
         entity = class_name.replace("Controller", "").replace("Endpoints", "").replace("Endpoint", "") or "Item"
         return textwrap.dedent(f"""\
@@ -580,76 +614,115 @@ def _tpl_csharp(class_name: str, ns: str, user_prompt: str, offline_note: str, t
 
 
 # Function: _tpl_java
-def _tpl_java(class_name: str, ns: str, user_prompt: str, offline_note: str, target: dict) -> str:
+def _tpl_java(fname: str, class_name: str, ns: str, user_prompt: str, offline_note: str, target: dict) -> str:
     """Return a ready-to-use Java file template based on the class name role."""
-    pkg = ns.lower()
-    if "Controller" in class_name:
-        entity = class_name.replace("Controller", "") or "Item"
+    normalized = fname.replace("\\", "/")
+    source_marker = "src/main/java/"
+    relative_parent = normalized.split(source_marker, 1)[-1].rsplit("/", 1)[0]
+    pkg = relative_parent.replace("/", ".").lower() if source_marker in normalized else ns.lower()
+    base_pkg = pkg.rsplit(".", 1)[0] if "." in pkg else pkg
+    if class_name == "Application" or class_name.endswith("Application"):
         return textwrap.dedent(f"""\
             // {offline_note}
-            package {pkg}.controller;
+            package {pkg};
 
-            import {pkg}.model.{entity};
-            import {pkg}.service.I{entity}Service;
-            import lombok.RequiredArgsConstructor;
-            import lombok.extern.slf4j.Slf4j;
-            import org.springframework.data.domain.Page;
-            import org.springframework.data.domain.Pageable;
+            import org.springframework.boot.SpringApplication;
+            import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+            @SpringBootApplication
+            public class {class_name} {{
+                public static void main(String[] args) {{
+                    SpringApplication.run({class_name}.class, args);
+                }}
+            }}
+        """)
+    if class_name.endswith("Entity"):
+        return textwrap.dedent(f"""\
+            // {offline_note}
+            package {pkg};
+
+            import jakarta.persistence.Entity;
+            import jakarta.persistence.GeneratedValue;
+            import jakarta.persistence.GenerationType;
+            import jakarta.persistence.Id;
+
+            @Entity
+            public class {class_name} {{
+                @Id
+                @GeneratedValue(strategy = GenerationType.IDENTITY)
+                private Long id;
+                private String name;
+
+                public Long getId() {{ return id; }}
+                public void setId(Long id) {{ this.id = id; }}
+                public String getName() {{ return name; }}
+                public void setName(String name) {{ this.name = name; }}
+            }}
+        """)
+    if class_name.endswith("Repository"):
+        entity = class_name.removesuffix("Repository") + "Entity"
+        return textwrap.dedent(f"""\
+            // {offline_note}
+            package {pkg};
+
+            import {base_pkg}.model.{entity};
+            import org.springframework.data.jpa.repository.JpaRepository;
+
+            public interface {class_name} extends JpaRepository<{entity}, Long> {{}}
+        """)
+    if class_name.endswith("Service"):
+        entity = class_name.removesuffix("Service") + "Entity"
+        repository = class_name.removesuffix("Service") + "Repository"
+        return textwrap.dedent(f"""\
+            // {offline_note}
+            package {pkg};
+
+            import {base_pkg}.model.{entity};
+            import {base_pkg}.repository.{repository};
+            import org.springframework.stereotype.Service;
+            import java.util.List;
+
+            @Service
+            public class {class_name} {{
+                private final {repository} repository;
+
+                public {class_name}({repository} repository) {{ this.repository = repository; }}
+                public List<{entity}> findAll() {{ return repository.findAll(); }}
+                public {entity} save({entity} entity) {{ return repository.save(entity); }}
+            }}
+        """)
+    if "Controller" in class_name:
+        entity = class_name.replace("Controller", "") or "Item"
+        entity_type = entity + "Entity"
+        service_type = entity + "Service"
+        return textwrap.dedent(f"""\
+            // {offline_note}
+            package {pkg};
+
+            import {base_pkg}.model.{entity_type};
+            import {base_pkg}.service.{service_type};
             import org.springframework.http.ResponseEntity;
-            import org.springframework.validation.annotation.Validated;
             import org.springframework.web.bind.annotation.*;
             import jakarta.validation.Valid;
             import java.net.URI;
+            import java.util.List;
 
             @RestController
             @RequestMapping("/api/{entity.lower()}s")
-            @RequiredArgsConstructor
-            @Slf4j
-            @Validated
-            public class {entity}Controller {{
+            public class {class_name} {{
+                private final {service_type} service;
 
-                private final I{entity}Service service;
+                public {class_name}({service_type} service) {{ this.service = service; }}
 
                 @GetMapping
-                public ResponseEntity<Page<{entity}>> getAll(Pageable pageable) {{
-                    log.info("GET /api/{entity.lower()}s");
-                    return ResponseEntity.ok(service.findAll(pageable));
-                }}
-
-                @GetMapping("/{{id}}")
-                public ResponseEntity<{entity}> getById(@PathVariable Long id) {{
-                    return service.findById(id)
-                        .map(ResponseEntity::ok)
-                        .orElseGet(() -> {{
-                            log.warn("{entity} {{}} not found", id);
-                            return ResponseEntity.notFound().build();
-                        }});
+                public ResponseEntity<List<{entity_type}>> getAll() {{
+                    return ResponseEntity.ok(service.findAll());
                 }}
 
                 @PostMapping
-                public ResponseEntity<{entity}> create(@Valid @RequestBody {entity} entity) {{
-                    {entity} saved = service.create(entity);
-                    log.info("Created {entity} id={{}}", saved.getId());
+                public ResponseEntity<{entity_type}> create(@Valid @RequestBody {entity_type} entity) {{
+                    {entity_type} saved = service.save(entity);
                     return ResponseEntity.created(URI.create("/api/{entity.lower()}s/" + saved.getId())).body(saved);
-                }}
-
-                @PutMapping("/{{id}}")
-                public ResponseEntity<{entity}> update(@PathVariable Long id, @Valid @RequestBody {entity} entity) {{
-                    try {{
-                        {entity} updated = service.update(id, entity);
-                        log.info("Updated {entity} id={{}}", id);
-                        return ResponseEntity.ok(updated);
-                    }} catch (RuntimeException e) {{
-                        log.warn("{entity} {{}} not found for update", id);
-                        return ResponseEntity.notFound().build();
-                    }}
-                }}
-
-                @DeleteMapping("/{{id}}")
-                public ResponseEntity<Void> delete(@PathVariable Long id) {{
-                    service.delete(id);
-                    log.warn("Deleted {entity} id={{}}", id);
-                    return ResponseEntity.noContent().build();
                 }}
             }}
         """)
@@ -684,7 +757,7 @@ def _tpl_typescript(fname: str, class_name: str, user_prompt: str, offline_note:
         return textwrap.dedent(f"""\
             // {offline_note}
             // Target: {target['name']}
-            const API_BASE = import.meta.env.VITE_API_URL ?? '/api';
+            const API_BASE = '/api';
 
             export interface {entity}Item {{
               id: number;
@@ -850,22 +923,122 @@ def _tpl_typescript(fname: str, class_name: str, user_prompt: str, offline_note:
     """)
 
 
+def _tpl_go(fname: str, project_name: str, offline_note: str) -> str:
+    """Return syntactically valid, dependency-free Go source by file role."""
+    normalized = fname.replace("\\", "/")
+    base_name = normalized.rsplit("/", 1)[-1]
+    parent = normalized.rsplit("/", 2)[-2] if "/" in normalized else "main"
+    package = "main" if normalized.startswith("cmd/") else re.sub(r"[^a-z0-9_]", "", parent.casefold()) or "app"
+    if base_name == "main.go":
+        return textwrap.dedent(f"""\
+            // {offline_note}
+            package main
+
+            import (
+                "log"
+                "net/http"
+            )
+
+            func main() {{
+                mux := http.NewServeMux()
+                mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {{
+                    w.Header().Set("Content-Type", "application/json")
+                    _, _ = w.Write([]byte(`{{"status":"ok","service":"{project_name}"}}`))
+                }})
+                log.Fatal(http.ListenAndServe(":8080", mux))
+            }}
+        """)
+    if base_name.endswith("_test.go"):
+        return textwrap.dedent(f"""\
+            // {offline_note}
+            package {package}
+
+            import "testing"
+
+            func TestGeneratedPackage(t *testing.T) {{
+                if "{package}" == "" {{ t.Fatal("package name must not be empty") }}
+            }}
+        """)
+    component = "".join(
+        word[:1].upper() + word[1:]
+        for word in re.sub(r"[^A-Za-z0-9]+", "_", base_name.rsplit(".", 1)[0]).split("_")
+        if word
+    ) or "Generated"
+    return textwrap.dedent(f"""\
+        // {offline_note}
+        package {package}
+
+        // Component identifies this generated package without placeholder behavior.
+        const {component}Component = "{package}"
+    """)
+
+
 # Function: _tpl_sql
 def _tpl_sql(fname: str, user_prompt: str, offline_note: str, target: dict) -> str:
     """Return a SQL DDL template for the given file."""
     db        = target.get("db_tech", "PostgreSQL")
     req_lines = "\n".join(f"-- {l}" for l in user_prompt.splitlines()[:8])
-    is_pg     = "postgres" in db.lower() or "pg" in db.lower()
-    id_col    = "id SERIAL PRIMARY KEY" if is_pg else "id INT IDENTITY(1,1) PRIMARY KEY"
-    ts_type   = "TIMESTAMPTZ NOT NULL DEFAULT NOW()" if is_pg else "DATETIME2 NOT NULL DEFAULT GETUTCDATE()"
-    ts_upd    = "TIMESTAMPTZ" if is_pg else "DATETIME2"
-    return textwrap.dedent(f"""\
-        -- {offline_note}
-        {req_lines}
-        -- Target: {db}
-        -- File: {fname}
-
-        CREATE TABLE IF NOT EXISTS items (
+    dialect = str(target.get("db_target") or db).casefold()
+    header = f"-- {offline_note}\n{req_lines}\n-- Target: {db}\n-- File: {fname}\n\n"
+    if "mssql" in dialect or "sql server" in dialect:
+        return header + textwrap.dedent("""\
+            IF OBJECT_ID(N'dbo.items', N'U') IS NULL
+            BEGIN
+                CREATE TABLE dbo.items (
+                    id INT IDENTITY(1,1) PRIMARY KEY,
+                    name NVARCHAR(255) NOT NULL,
+                    description NVARCHAR(MAX) NULL,
+                    is_active BIT NOT NULL CONSTRAINT DF_items_is_active DEFAULT (1),
+                    created_at DATETIME2 NOT NULL CONSTRAINT DF_items_created_at DEFAULT (SYSUTCDATETIME()),
+                    updated_at DATETIME2 NULL
+                );
+            END;
+        """)
+    if "oracle" in dialect:
+        return header + textwrap.dedent("""\
+            CREATE TABLE items (
+                id NUMBER NOT NULL,
+                name VARCHAR2(255 CHAR) NOT NULL,
+                description CLOB,
+                is_active NUMBER(1) DEFAULT 1 NOT NULL,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
+                updated_at TIMESTAMP WITH TIME ZONE,
+                CONSTRAINT pk_items PRIMARY KEY (id)
+            );
+            CREATE INDEX idx_items_name ON items(name);
+        """)
+    if "mysql" in dialect:
+        return header + textwrap.dedent("""\
+            CREATE TABLE IF NOT EXISTS items (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                description TEXT,
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP NULL
+            );
+            CREATE INDEX idx_items_name ON items(name);
+        """)
+    if "db2" in dialect:
+        return header + textwrap.dedent("""\
+            CREATE TABLE items (
+                id BIGINT NOT NULL,
+                name VARCHAR(255) NOT NULL,
+                description CLOB,
+                is_active SMALLINT NOT NULL DEFAULT 1,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT TIMESTAMP,
+                updated_at TIMESTAMP,
+                CONSTRAINT pk_items PRIMARY KEY (id)
+            );
+            CREATE INDEX idx_items_name ON items(name);
+        """)
+    is_pg = "postgres" in dialect or "pg" in dialect
+    id_col = "id BIGSERIAL PRIMARY KEY" if is_pg else "id INTEGER PRIMARY KEY"
+    ts_type = "TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP" if is_pg else "TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP"
+    ts_upd = "TIMESTAMPTZ" if is_pg else "TIMESTAMP"
+    create_table = "CREATE TABLE IF NOT EXISTS" if is_pg else "CREATE TABLE"
+    return header + textwrap.dedent(f"""\
+        {create_table} items (
             {id_col},
             name        VARCHAR(255) NOT NULL,
             description TEXT,
@@ -874,8 +1047,7 @@ def _tpl_sql(fname: str, user_prompt: str, offline_note: str, target: dict) -> s
             updated_at  {ts_upd}
         );
 
-        CREATE INDEX IF NOT EXISTS idx_items_name   ON items(name);
-        CREATE INDEX IF NOT EXISTS idx_items_active ON items(is_active);
+        CREATE INDEX idx_items_name ON items(name);
     """)
 
 
@@ -972,7 +1144,11 @@ def _template_from_prompt(fname: str, user_prompt: str, target: dict, project_na
     lang        = target.get("language", "csharp")
     ext         = fname.rsplit(".", 1)[-1].lower() if "." in fname else ""
     stem        = fname.rsplit("/", 1)[-1].rsplit(".", 1)[0]
-    class_name  = "".join(w.capitalize() for w in stem.replace("-", "_").split("_")) or project_name
+    class_name  = "".join(
+        word[:1].upper() + word[1:]
+        for word in re.sub(r"[^A-Za-z0-9]+", "_", stem).split("_")
+        if word
+    ) or project_name
     ns          = project_name
     offline_note = "# LLM offline \u2014 select an installed model in the generation runtime"
 
@@ -981,7 +1157,12 @@ def _template_from_prompt(fname: str, user_prompt: str, target: dict, project_na
     if ext == "cs":
         return _tpl_csharp(class_name, ns, user_prompt, offline_note, target)
     if ext == "java":
-        return _tpl_java(class_name, ns, user_prompt, offline_note, target)
+        return _tpl_java(fname, class_name, ns, user_prompt, offline_note, target)
+    if ext == "go":
+        return _tpl_go(fname, project_name, offline_note)
+    if fname.replace("\\", "/").endswith("go.mod"):
+        module = re.sub(r"[^a-z0-9-]+", "-", project_name.casefold()).strip("-") or "modernized-app"
+        return f"module example.com/{module}\n\ngo 1.23\n"
     if ext in ("ts", "tsx", "js", "jsx"):
         return _tpl_typescript(fname, class_name, user_prompt, offline_note, target)
     if ext == "sql":
@@ -990,6 +1171,82 @@ def _template_from_prompt(fname: str, user_prompt: str, target: dict, project_na
         return _tpl_dockerfile(lang, ns)
     if ext in ("yml", "yaml") and ("docker" in fname or "compose" in fname):
         return _tpl_docker_compose(offline_note)
+    if ext in ("yml", "yaml"):
+        app_name = re.sub(r"[^a-z0-9-]+", "-", project_name.casefold()).strip("-") or "modernized-app"
+        return textwrap.dedent(f"""\
+            spring:
+              application:
+                name: {app_name}
+            server:
+              port: 8080
+            management:
+              endpoints:
+                web:
+                  exposure:
+                    include: health,info
+        """)
+    if ext == "ini":
+        return textwrap.dedent("""\
+            [alembic]
+            script_location = alembic
+            prepend_sys_path = .
+            sqlalchemy.url = postgresql+psycopg://postgres:postgres@localhost/app
+
+            [loggers]
+            keys = root
+            [handlers]
+            keys = console
+            [formatters]
+            keys = generic
+            [logger_root]
+            level = WARN
+            handlers = console
+            [handler_console]
+            class = StreamHandler
+            args = (sys.stderr,)
+            level = NOTSET
+            formatter = generic
+            [formatter_generic]
+            format = %(levelname)-5.5s [%(name)s] %(message)s
+        """)
+    if fname.replace("\\", "/").endswith("package.json"):
+        package_name = re.sub(r"[^a-z0-9-]+", "-", project_name.casefold()).strip("-") or "modernized-app"
+        return json.dumps({
+            "name": package_name,
+            "version": "1.0.0",
+            "private": True,
+            "scripts": {"test": "node --test"},
+        }, indent=2) + "\n"
+    if fname.replace("\\", "/").endswith("pom.xml"):
+        artifact_id = re.sub(r"[^a-z0-9-]+", "-", project_name.casefold()).strip("-") or "modernized-app"
+        return textwrap.dedent(f"""\
+            <?xml version="1.0" encoding="UTF-8"?>
+            <project xmlns="http://maven.apache.org/POM/4.0.0"
+                     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                     xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+              <modelVersion>4.0.0</modelVersion>
+              <parent>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-starter-parent</artifactId>
+                <version>3.4.11</version>
+                <relativePath/>
+              </parent>
+              <groupId>com.modernize</groupId>
+              <artifactId>{artifact_id}</artifactId>
+              <version>1.0.0</version>
+              <properties><java.version>21</java.version></properties>
+              <dependencies>
+                <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-web</artifactId></dependency>
+                <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-data-jpa</artifactId></dependency>
+                <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-validation</artifactId></dependency>
+                <dependency><groupId>com.h2database</groupId><artifactId>h2</artifactId><scope>runtime</scope></dependency>
+                <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-test</artifactId><scope>test</scope></dependency>
+              </dependencies>
+              <build><plugins><plugin><groupId>org.springframework.boot</groupId><artifactId>spring-boot-maven-plugin</artifactId></plugin></plugins></build>
+            </project>
+        """)
+    if fname.replace("\\", "/").endswith("requirements.txt"):
+        return "fastapi==0.121.0\nuvicorn[standard]==0.38.0\nsqlalchemy[asyncio]==2.0.44\nasyncpg==0.30.0\nalembic==1.17.1\npydantic-settings==2.11.0\npytest==8.4.2\n"
     req_lines = "\n".join(f"  {l}" for l in user_prompt.splitlines()[:20])
     return (
         f"# {fname}\n\n"

@@ -9,6 +9,66 @@ from services.modernizer.conversion_pipeline import (
 
 
 class CustomStackResolutionTests(unittest.TestCase):
+    def test_prompt_resolution_does_not_mutate_catalog_entries(self):
+        from services.modernizer.prompt_pipeline import _pf_resolve_target
+        from services.modernizer.target_config import TARGET_STACKS
+
+        original = dict(TARGET_STACKS["spring_boot"])
+        _pf_resolve_target(
+            "Create Java 21 Spring Boot 3 with React 19 and PostgreSQL 17.",
+            "spring_boot",
+            "",
+        )
+
+        self.assertEqual(original, TARGET_STACKS["spring_boot"])
+
+    def test_kotlin_spring_preset_is_not_rebased_to_java(self):
+        from services.modernizer.prompt_pipeline import _pf_resolve_target
+
+        target, signals, _full_stack, language, _requirements = _pf_resolve_target(
+            "Create an API using Kotlin with Spring Boot and PostgreSQL 16.",
+            "kotlin_spring",
+            "",
+        )
+
+        self.assertEqual("kotlin", language)
+        self.assertEqual("kotlin", target["language"])
+        self.assertIn("Spring Boot", signals["backend"])
+
+    def test_flutter_dotnet_preset_keeps_dart_as_primary_language(self):
+        from services.modernizer.prompt_pipeline import _pf_resolve_target
+
+        target, signals, full_stack, language, _requirements = _pf_resolve_target(
+            "Create a Flutter mobile application with a .NET 8 Web API and PostgreSQL.",
+            "flutter_dotnet",
+            "",
+        )
+
+        self.assertEqual("dart", language)
+        self.assertEqual("dart", target["language"])
+        self.assertEqual("Flutter", signals["frontend"])
+        self.assertTrue(full_stack)
+
+    def test_custom_java_react19_prompt_preserves_explicit_versions(self):
+        from services.modernizer.prompt_pipeline import _pf_resolve_target
+
+        prompt = (
+            "Create a production-ready application using Java 21 with Spring Boot 3, "
+            "React 19 with TypeScript and Vite, PostgreSQL 17 with Spring Data JPA, "
+            "Apache Kafka, Docker, and Kubernetes deployment."
+        )
+        target, signals, full_stack, language, _requirements = _pf_resolve_target(
+            prompt, "custom", "",
+        )
+
+        self.assertEqual("java", language)
+        self.assertEqual("Java 21 Spring Boot 3", target["backend_tech"])
+        self.assertEqual("React 19", signals["frontend"])
+        self.assertEqual("PostgreSQL 17", signals["db"])
+        self.assertEqual("PostgreSQL 17 + Spring Data JPA", target["db_tech"])
+        self.assertEqual("Kubernetes", signals["deploy"])
+        self.assertTrue(full_stack)
+
     def test_explicit_fastapi_prompt_rebases_stale_dotnet_preset(self):
         from services.modernizer.prompt_pipeline import _pf_resolve_target
 

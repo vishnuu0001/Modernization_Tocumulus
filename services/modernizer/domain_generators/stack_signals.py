@@ -40,6 +40,9 @@ def _detect_stack_signals(user_prompt: str) -> dict[str, str | None]:
     angular_version = re.search(r"\bangular\s*(\d+)\b", text)
     if angular_version:
         frontend = f"Angular {angular_version.group(1)}"
+    react_version = re.search(r"\breact\s*(\d+)\b", text)
+    if react_version:
+        frontend = f"React {react_version.group(1)}"
     backend = _first([
         (".net 10", ".NET 10"), ("dotnet 10", ".NET 10"),
         (".net 9", ".NET 9"), ("dotnet 9", ".NET 9"),
@@ -57,10 +60,19 @@ def _detect_stack_signals(user_prompt: str) -> dict[str, str | None]:
         ("fastapi", "FastAPI"), ("fast api", "FastAPI"), ("flask", "Flask"),
         ("nestjs", "NestJS"), ("express", "Express.js"), ("node.js", "Node.js"),
     ])
+    if backend and "spring boot" in backend.casefold():
+        java_version = re.search(r"\bjava\s*(\d+)\b", text)
+        spring_version = re.search(r"\bspring\s*boot\s*(\d+(?:\.\d+)*)\b", text)
+        if java_version or spring_version:
+            backend = " ".join(part for part in (
+                f"Java {java_version.group(1)}" if java_version else "",
+                f"Spring Boot {spring_version.group(1)}" if spring_version else "Spring Boot",
+            ) if part)
     orm = _first([
         ("dapper", "Dapper"), ("entity framework", "Entity Framework Core"),
         ("ef core", "Entity Framework Core"), ("sqlalchemy", "SQLAlchemy"),
-        ("hibernate", "Hibernate"), ("mongoose", "Mongoose"), ("prisma", "Prisma"),
+        ("spring data jpa", "Spring Data JPA"), ("hibernate", "Hibernate"),
+        ("mongoose", "Mongoose"), ("prisma", "Prisma"),
     ])
     auth = _first([
         ("entra id b2b", "Azure Entra ID (B2B)"), ("entra id b2c", "Azure Entra ID (B2C)"),
@@ -117,6 +129,10 @@ def _detect_stack_signals(user_prompt: str) -> dict[str, str | None]:
     ] if needle in text), None)
     db = db_match[0] if db_match else None
     db_target = db_match[1] if db_match else None
+    if db_target == "postgres":
+        postgres_version = re.search(r"\bpostgres(?:ql)?\s*(\d+)\b", text)
+        if postgres_version:
+            db = f"PostgreSQL {postgres_version.group(1)}"
     deployment_kind = (
         "kubernetes" if deploy and any(token in deploy.casefold() for token in (
             "kubernetes", "openshift", "eks", "aks", "gke",
@@ -180,9 +196,13 @@ def _apply_backend_language_override(merged: dict, signals: dict[str, str | None
         return
     merged["backend_tech"] = signals["backend"]
     low = signals["backend"].lower()
-    if ".net" in low or "asp" in low:
+    current_language = str(merged.get("language") or "").casefold()
+    frontend = str(merged.get("frontend_tech") or "").casefold()
+    if (".net" in low or "asp" in low) and not (
+        current_language == "dart" and "flutter" in frontend
+    ):
         merged["language"] = "csharp"
-    elif signals.get("java_framework"):
+    elif signals.get("java_framework") and current_language != "kotlin":
         merged["language"] = "java"
     elif signals["backend"] in ("Django", "FastAPI", "Flask"):
         merged["language"] = "python"

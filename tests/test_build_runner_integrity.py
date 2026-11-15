@@ -32,6 +32,7 @@ from services.build_runner import (
     _run_npm_tsc_build,
     _run_sql_project_build,
     _run_npm_subprocess_with_retry,
+    _run_process_tree,
     _run_maven_build,
     _run_dotnet_build,
     _run_artifact_project_build,
@@ -41,6 +42,38 @@ from services.build_runner import (
 
 
 class BuildRunnerIntegrityTests(unittest.TestCase):
+    def test_windows_timeout_terminates_the_package_manager_process_tree(self):
+        class TimedOutProcess:
+            pid = 4321
+            returncode = 1
+
+            def __init__(self):
+                self.communicate_calls = 0
+
+            def communicate(self, timeout=None):
+                self.communicate_calls += 1
+                if self.communicate_calls == 1:
+                    raise subprocess.TimeoutExpired(["bundle", "install"], timeout)
+                return "partial output", "timed out"
+
+            def kill(self):
+                return None
+
+        process = TimedOutProcess()
+        with (
+            patch("services.build_runner.os.name", "nt"),
+            patch("services.build_runner.subprocess.Popen", return_value=process),
+            patch("services.build_runner.subprocess.run") as terminate,
+            self.assertRaises(subprocess.TimeoutExpired),
+        ):
+            _run_process_tree(["bundle", "install"], cwd=".", timeout=1)
+
+        self.assertEqual(
+            ["taskkill", "/PID", "4321", "/T", "/F"],
+            terminate.call_args.args[0],
+        )
+        self.assertEqual(2, process.communicate_calls)
+
     def test_windows_portable_node_home_is_resolved(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
@@ -74,7 +107,29 @@ class BuildRunnerIntegrityTests(unittest.TestCase):
             root = Path(directory)
             (root / "test_service.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
             commands = _python_test_commands("python", root)
-        self.assertEqual([["python", "-m", "pytest", "-q"]], commands)
+        self.assertEqual(1, len(commands))
+        self.assertEqual(["python", "-c"], commands[0][:2])
+        self.assertIn("pytest.main", commands[0][2])
+        self.assertEqual(".", commands[0][3])
+
+    def test_python_test_discovery_ignores_restored_environment_packages(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dependency_test = (
+                root / ".modernization-venv" / "Lib" / "site-packages" / "asgiref" / "testing.py"
+            )
+            dependency_test.parent.mkdir(parents=True)
+            dependency_test.write_text("raise RuntimeError('not an application test')\n", encoding="utf-8")
+            application_test = root / "app" / "tests" / "test_health.py"
+            application_test.parent.mkdir(parents=True)
+            application_test.write_text("def test_health():\n    assert True\n", encoding="utf-8")
+
+            commands = _python_test_commands("python", root)
+
+        self.assertEqual(1, len(commands))
+        self.assertEqual(["python", "-c"], commands[0][:2])
+        self.assertIn("pytest.main", commands[0][2])
+        self.assertEqual("app", commands[0][3])
 
     def test_sql_project_route_parses_every_sql_file(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -378,7 +433,7 @@ class BuildRunnerIntegrityTests(unittest.TestCase):
 
     # Function: test_transient_npm_crash_is_retried_and_recovers
     @patch("services.build_runner.time.sleep")
-    @patch("services.build_runner.subprocess.run")
+    @patch("services.build_runner._run_process_tree")
     def test_transient_npm_crash_is_retried_and_recovers(self, run, _sleep):
         crash = subprocess.CompletedProcess(
             args=["npm", "install"], returncode=1, stdout="",
@@ -397,7 +452,7 @@ class BuildRunnerIntegrityTests(unittest.TestCase):
 
     # Function: test_transient_npm_crash_gives_up_after_max_retries
     @patch("services.build_runner.time.sleep")
-    @patch("services.build_runner.subprocess.run")
+    @patch("services.build_runner._run_process_tree")
     def test_transient_npm_crash_gives_up_after_max_retries(self, run, _sleep):
         crash = subprocess.CompletedProcess(
             args=["npm", "install"], returncode=1, stdout="",
@@ -414,7 +469,7 @@ class BuildRunnerIntegrityTests(unittest.TestCase):
 
     # Function: test_real_dependency_failure_is_not_retried
     @patch("services.build_runner.time.sleep")
-    @patch("services.build_runner.subprocess.run")
+    @patch("services.build_runner._run_process_tree")
     def test_real_dependency_failure_is_not_retried(self, run, _sleep):
         not_found = subprocess.CompletedProcess(
             args=["npm", "install"], returncode=1, stdout="",

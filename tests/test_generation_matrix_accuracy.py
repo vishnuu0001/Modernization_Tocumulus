@@ -31,6 +31,7 @@ from services.modernizer.prompt_pipeline import (
 from services.validators import _infer_sql_dialect, _validate_sql, validate_file
 from services.modernizer.scaffolds.csharp import _gen_service
 from services.modernizer.scaffolds.polyglot import generate_polyglot_project
+from services.modernizer.scaffolds.single_file_templates import _template_from_prompt
 
 
 class GenerationMatrixAccuracyTests(unittest.TestCase):
@@ -1411,6 +1412,64 @@ import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
                 searchable = ("\n".join(files) + "\n" + "\n".join(files.values())).casefold()
                 for token in expected:
                     self.assertIn(token.casefold(), searchable)
+
+    def test_dependency_scaffolds_use_restorable_supported_versions(self):
+        django = generate_polyglot_project(
+            "python", "Demo", "Orders",
+            {"backend_tech": "Django 5 + Django REST Framework"},
+        )
+        self.assertIn(
+            "psycopg[binary]==3.3.9",
+            django["ModernizedApp/services/orders-service/requirements.txt"],
+        )
+
+        laravel = generate_polyglot_project(
+            "php", "Demo", "Orders", {"backend_tech": "PHP 8 + Laravel"},
+        )
+        self.assertIn(
+            '"laravel/framework":"^12.0"',
+            laravel["ModernizedApp/services/orders-service/composer.json"],
+        )
+
+        fastapi_manifest = _backend_manifest_files(
+            "python", "Demo", "Python FastAPI", False, False, "postgres",
+        )["requirements.txt"]
+        self.assertIn("pytest", fastapi_manifest)
+        self.assertIn("httpx", fastapi_manifest)
+
+    def test_offline_go_and_kotlin_scaffolds_are_build_closed(self):
+        go_files = {
+            name: _template_from_prompt(
+                name, "Create a Go service", {"name": "Go", "language": "go"}, "Demo",
+            )
+            for name in ("internal/http/handler.go", "internal/http/router.go")
+        }
+        combined = "\n".join(go_files.values())
+        self.assertIn("const HandlerComponent", combined)
+        self.assertIn("const RouterComponent", combined)
+
+        kotlin = generate_polyglot_project(
+            "kotlin", "Demo", "Orders", {"backend_tech": "Spring Boot"},
+        )
+        build_file = kotlin["ModernizedApp/services/orders-service/build.gradle.kts"]
+        self.assertNotIn("application {", build_file)
+
+    def test_sql_fallback_template_is_target_dialect_specific(self):
+        for dialect in ("postgres", "mssql", "oracle", "mysql", "db2", "ansi"):
+            with self.subTest(dialect=dialect):
+                source = _template_from_prompt(
+                    "Database/schema.sql",
+                    "Generate a complete inventory schema",
+                    {
+                        "name": f"{dialect} schema", "language": "sql",
+                        "db_target": dialect, "db_tech": dialect,
+                    },
+                    "Demo",
+                )
+                result = validate_file(
+                    "Database/schema.sql", source, "sql", dialect_hint=dialect,
+                )
+                self.assertTrue(result.passed, result.diagnostics)
 
     # Function: test_composite_presets_emit_strict_spa_projects
     def test_composite_presets_emit_strict_spa_projects(self):
