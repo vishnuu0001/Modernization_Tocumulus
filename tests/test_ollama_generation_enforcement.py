@@ -290,6 +290,7 @@ class OllamaGenerationEnforcementTests(unittest.TestCase):
         prompt = generated.call_args.args[0]
         self.assertIn("non-React TypeScript data-contract file", prompt)
         self.assertIn("ErrorResponseDto", prompt)
+        self.assertIn("enums cannot contain constructors, fields, or methods", prompt)
         self.assertNotIn("ORIGINAL USER REQUIREMENTS", prompt)
         self.assertNotIn("large React authentication page", prompt)
 

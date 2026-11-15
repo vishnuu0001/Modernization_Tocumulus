@@ -60,6 +60,10 @@ export async function loadTrain(id: string): Promise<TrainBean> {
         self.assertTrue(output[response_path].startswith(
             "Create the missing non-React TypeScript data-contract module"
         ))
+        self.assertIn("RUNTIME SHAPE EVIDENCE", output[response_path])
+        self.assertIn("ResponseCode: static members:", output[response_path])
+        self.assertIn("instance methods on static values: getCode", output[response_path])
+        self.assertIn("never put methods inside an enum", output[response_path])
         self.assertNotIn("CONSUMER EVIDENCE", output[fetch_path])
         self.assertNotIn("CONSUMER EVIDENCE", output[response_path])
 

@@ -1215,6 +1215,18 @@ def _generate_validated(
                 )
             )
         )
+        typescript_enum_runtime_mismatch = bool(
+            validation_language == "typescript"
+            and forbid_jsx
+            and any("TS1357" in str(item) for item in result.diagnostics)
+            and re.search(r"\bexport\s+enum\s+[A-Za-z_$][\w$]*\s*\{", content)
+            and re.search(
+                r"(?m)^\s*(?:static\s+)?[A-Za-z_$][\w$]*\s*\([^;{}]*\)"
+                r"\s*(?::\s*[^{}\r\n]+)?\s*\{",
+                content,
+            )
+            and "runtime" in prompt.casefold()
+        )
         language_repair_rules = ""
         if validation_language in {"typescript", "javascript"}:
             language_repair_rules = (
@@ -1228,6 +1240,9 @@ def _generate_validated(
                 "Every function, arrow, callback, or method whose body contains `await` must be "
                 "declared `async` and expose a Promise-compatible return type, including response "
                 "body/error decoding helpers. "
+                "TypeScript enums contain only comma-separated members; they cannot declare "
+                "constructors, fields, or methods. A runtime constant family whose values expose "
+                "methods must be an exported class with static readonly instances, not an enum. "
                 "Return one complete source file, never a markdown "
                 "fence or a filename header.\n"
             )
@@ -1393,7 +1408,10 @@ def _generate_validated(
                 and result.checker == "source-completeness"
                 and any("incomplete placeholder construct" in str(item) for item in result.diagnostics)
             )
-            if jsx_role_mismatch or incomplete_plain_ts or truncation_recovery:
+            if (
+                jsx_role_mismatch or incomplete_plain_ts
+                or typescript_enum_runtime_mismatch or truncation_recovery
+            ):
                 # Repeating the invalid component in the repair prompt anchors
                 # small models to its JSX. The same applies to a placeholder
                 # body or an EOF-shaped/truncated file. In all three cases,
@@ -1415,6 +1433,15 @@ def _generate_validated(
                         "operation must return its declared source-evidenced value or throw a "
                         "descriptive error. Never return null or undefined as a stub; use no-value returns "
                         "only for operations explicitly declared as Promise<void>."
+                    )
+                elif typescript_enum_runtime_mismatch:
+                    failure_heading = "PREVIOUS ATTEMPT USED AN ENUM FOR A RUNTIME CLASS"
+                    recovery_rule = (
+                        "Discard the invalid enum completely. Re-author the binding from the "
+                        "FILE CONTRACT as an exported runtime class. Preserve only source-evidenced "
+                        "named values as static readonly instances, use a private constructor for "
+                        "their data, and implement consumed instance/static methods on the class. "
+                        "Do not place any constructor, field, or method inside a TypeScript enum."
                     )
                 else:
                     failure_heading = "PREVIOUS ATTEMPT WAS STRUCTURALLY INCOMPLETE"

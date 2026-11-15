@@ -277,7 +277,9 @@ def _ollama_generate_all_sources(
                 "This is a non-React TypeScript data-contract file. Return only declarations required "
                 "by the file contract. JSX, HTML, React imports, hooks, components, copied consumer "
                 "source, markdown, prose, TODOs, and placeholders are forbidden. Runtime bindings must "
-                "be classes; type-only bindings must be interfaces, type aliases, or enums.\n\n"
+                "be classes; type-only bindings must be interfaces, type aliases, or enums. TypeScript "
+                "enums cannot contain constructors, fields, or methods. If named runtime constants expose "
+                "methods, use a class with source-evidenced static readonly instances, never an enum.\n\n"
                 f"FILE CONTRACT:\n{contract}"
             )
         elif is_non_react_runtime_module:

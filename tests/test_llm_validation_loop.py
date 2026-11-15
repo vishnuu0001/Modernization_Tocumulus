@@ -18,6 +18,62 @@ from services.validators import ValidationResult
 
 class LlmValidationLoopTests(unittest.TestCase):
     @patch("services.llm.generate")
+    def test_runtime_enum_with_methods_is_reauthored_as_class_from_contract(self, generate):
+        malformed = (
+            "export enum ResponseCode {\n"
+            "  BAD_REQUEST = new ResponseCode(400, 'Bad Request'),\n"
+            "  getMessageByStatusCode(status: number): string | undefined {\n"
+            "    return status === 400 ? 'Bad Request' : undefined;\n"
+            "  }\n"
+            "  getCode(): number { return this.value; }\n"
+            "}\n"
+        )
+        complete = (
+            "export class ResponseCode {\n"
+            "  static readonly BAD_REQUEST = new ResponseCode(400, 'Bad Request');\n"
+            "  private constructor(private readonly code: number, public readonly message: string) {}\n"
+            "  getCode(): number { return this.code; }\n"
+            "  static getMessageByStatusCode(status: number): ResponseCode | undefined {\n"
+            "    return status === 400 ? ResponseCode.BAD_REQUEST : undefined;\n"
+            "  }\n"
+            "}\n"
+        )
+        generate.side_effect = [malformed, complete]
+
+        content, result, attempts = _generate_validated(
+            "Generate a non-React TypeScript data-contract module. ResponseCode is consumed "
+            "as a runtime class with BAD_REQUEST.getCode() and getMessageByStatusCode().",
+            model="test-model", system="typescript", max_tokens=2048, num_ctx=4096,
+            rel_path="frontend/src/components/constant/ResponseCode.ts",
+            language="typescript", max_attempts=3, forbid_jsx=True,
+        )
+
+        self.assertTrue(result.passed, result.diagnostics)
+        self.assertEqual(2, attempts)
+        self.assertEqual(complete, content)
+        repair_prompt = generate.call_args_list[1].args[0]
+        self.assertIn("PREVIOUS ATTEMPT USED AN ENUM FOR A RUNTIME CLASS", repair_prompt)
+        self.assertIn("Discard the invalid enum completely", repair_prompt)
+        self.assertNotIn(malformed.strip(), repair_prompt)
+
+    @patch("services.llm.generate")
+    def test_plain_typescript_enum_remains_supported(self, generate):
+        valid_enum = "export enum Direction { Up = 'UP', Down = 'DOWN' }\n"
+        generate.return_value = valid_enum
+
+        content, result, attempts = _generate_validated(
+            "Generate a type-only Direction enum",
+            model="test-model", system="typescript", max_tokens=1024, num_ctx=4096,
+            rel_path="frontend/src/types/Direction.ts", language="typescript",
+            max_attempts=3, forbid_jsx=True,
+        )
+
+        self.assertTrue(result.passed, result.diagnostics)
+        self.assertEqual(1, attempts)
+        self.assertEqual(valid_enum, content)
+        generate.assert_called_once()
+
+    @patch("services.llm.generate")
     def test_ts1308_transport_helpers_are_repaired_without_another_model_call(self, generate):
         cases = (
             (

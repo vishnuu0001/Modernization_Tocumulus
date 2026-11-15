@@ -5877,6 +5877,7 @@ def _pf_expand_generated_source_closure(
                         if "<" not in stripped and ">" not in stripped:
                             usage_lines.append(stripped[:300])
                 property_evidence = []
+                runtime_shape_evidence = []
                 for name in imported_names:
                     variables = set(re.findall(
                         rf"\b([A-Za-z_$][\w$]*)\s*:\s*{re.escape(name)}\b",
@@ -5894,17 +5895,38 @@ def _pf_expand_generated_source_closure(
                         f"- {name}: observed properties: "
                         + (", ".join(properties) if properties else "none directly observed")
                     )
+                    static_methods = sorted(set(re.findall(
+                        rf"\b{re.escape(name)}\.([A-Za-z_$][\w$]*)\s*\(", content,
+                    )))
+                    static_members = sorted(set(re.findall(
+                        rf"\b{re.escape(name)}\.([A-Za-z_$][\w$]*)\b", content,
+                    )) - set(static_methods))
+                    instance_methods = sorted(set(re.findall(
+                        rf"\b{re.escape(name)}\.[A-Za-z_$][\w$]*\."
+                        rf"([A-Za-z_$][\w$]*)\s*\(", content,
+                    )))
+                    runtime_shape_evidence.append(
+                        f"- {name}: static members: {', '.join(static_members) or 'none'}; "
+                        f"static methods: {', '.join(static_methods) or 'none'}; "
+                        f"instance methods on static values: {', '.join(instance_methods) or 'none'}"
+                    )
                 evidence = (
                     "TYPE USAGE SIGNATURES:\n"
                     + ("\n".join(dict.fromkeys(usage_lines[:30])) or "(none beyond the import)")
                     + "\n\nTYPED VARIABLE EVIDENCE:\n"
                     + "\n".join(property_evidence)
+                    + "\n\nRUNTIME SHAPE EVIDENCE:\n"
+                    + "\n".join(runtime_shape_evidence)
                 )
                 runtime_rule = (
                     "The following imports are consumed as runtime values and MUST be exported classes: "
                     + ", ".join(runtime_names)
                     + ". A class whose name contains Error or Exception must extend Error, preserve the "
                     "message, set its name, and expose only source-evidenced status/code fields. "
+                    "TypeScript enums cannot contain constructors, fields, or methods. When consumers "
+                    "invoke methods on named constants (for example VALUE.getCode()), implement a class "
+                    "with a private constructor and source-evidenced static readonly instances; never "
+                    "put methods inside an enum. "
                     if runtime_names else
                     "Emit only concise exported interfaces, type aliases, or enums. "
                 )
