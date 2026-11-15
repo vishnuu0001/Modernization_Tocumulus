@@ -328,6 +328,54 @@ class JavaDomainGeneratorTimeBudgetTests(unittest.TestCase):
                 self.assertIn("do not invent aliases", prompt)
                 self.assertIn("Use Auth directly for request bodies", prompt)
 
+    def test_quarkus_domain_generation_rejects_active_record_controller_drift(self):
+        from services.modernizer.domain_generators.java import _llm_domain_java
+
+        controller_path = (
+            "ModernizedApp/services/auth-service/src/main/java/"
+            "com/acme/auth/controller/AuthController.java"
+        )
+        entity_path = (
+            "ModernizedApp/services/auth-service/src/main/java/"
+            "com/acme/auth/model/Auth.java"
+        )
+        generated = [
+            (
+                "package com.acme.auth.controller;\n"
+                "import io.quarkus.hibernate.orm.panache.PanacheEntity;\n"
+                "import io.smallrye.mutiny.Uni;\n"
+                "public class AuthController { Object all() { return PanacheEntity.list(); } }\n",
+                ValidationResult(controller_path, "java", "compiler", True, []),
+                1,
+            ),
+            (
+                "package com.acme.auth.model;\n"
+                "import jakarta.persistence.Entity;\n"
+                "@Entity public class Auth { public Auth() {} }\n",
+                ValidationResult(entity_path, "java", "compiler", True, []),
+                1,
+            ),
+        ]
+        files = {}
+
+        with patch(
+            "services.modernizer.validation_orchestration._generate_validated",
+            side_effect=generated,
+        ):
+            _llm_domain_java(
+                files=files, domain="Auth", root_ns="acme", domain_tables=["AUTH"],
+                antipatterns=[], context="ctx", prod_rules="", source_sec="", guide_sec="",
+                model="qwen3.5:9b", system="sys", tables=["AUTH"],
+                target={"backend_tech": "Java 21 Quarkus", "db_target": "postgres"},
+                on_step=None, generate=lambda *args, **kwargs: "",
+            )
+
+        controller = files[controller_path]
+        self.assertIn("private final IAuthService service;", controller)
+        self.assertIn("return service.findAll();", controller)
+        self.assertNotIn("PanacheEntity", controller)
+        self.assertNotIn("Uni<", controller)
+
     def test_all_java_domain_calls_pass_the_java_aggregate_time_budget(self):
         from services.modernizer._shared import _JAVA_FILE_GENERATION_MAX_SECONDS
         from services.modernizer.domain_generators.java import _llm_domain_java

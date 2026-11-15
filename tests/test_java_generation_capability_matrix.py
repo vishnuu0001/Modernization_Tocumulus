@@ -162,6 +162,105 @@ class JavaGenerationCapabilityMatrixTests(unittest.TestCase):
         )
         self.assertNotIn('log.info("Retrieving user by ID: {}", id)', controller)
 
+    def test_quarkus_reconciliation_replaces_active_record_controller_in_repository_module(self):
+        root = "Demo/backend/auth-service/src/main/java/com/comshashi/auth"
+        controller_path = f"{root}/controller/AuthController.java"
+        output = {
+            f"{root}/model/Auth.java": (
+                "package com.comshashi.auth.model;\n"
+                "import jakarta.persistence.Entity;\n"
+                "@Entity public class Auth { public Auth() {} }\n"
+            ),
+            f"{root}/service/IAuthService.java": (
+                "package com.comshashi.auth.service;\n"
+                "import java.util.List; import java.util.Optional;\n"
+                "import com.comshashi.auth.model.Auth;\n"
+                "public interface IAuthService {\n"
+                " List<Auth> findAll();\n"
+                " Optional<Auth> findById(Long id);\n"
+                " Auth create(Auth value);\n"
+                " Auth update(Long id, Auth value);\n"
+                " void delete(Long id);\n}\n"
+            ),
+            controller_path: (
+                "package com.comshashi.auth.controller;\n"
+                "import com.comshashi.auth.model.Auth;\n"
+                "import io.quarkus.hibernate.orm.panache.PanacheEntity;\n"
+                "import io.smallrye.mutiny.Uni;\n"
+                "import jakarta.ws.rs.core.Response;\n"
+                "public class AuthController {\n"
+                " Uni<Response> findAll() { return PanacheEntity.list().asUni(); }\n"
+                " Auth find(Long id) { return Auth.findById(id); }\n"
+                "}\n"
+            ),
+        }
+
+        _reconcile_java_generation_output(
+            output, "Demo", {"backend_tech": "Java 21 Quarkus", "db_target": "postgres"},
+        )
+
+        controller = next(
+            content for generated_path, content in output.items()
+            if generated_path.endswith("/controller/AuthController.java")
+        )
+        self.assertIn("private final IAuthService service;", controller)
+        self.assertIn("return service.findAll();", controller)
+        self.assertIn("service.findById(id)", controller)
+        self.assertIn("service.create(value)", controller)
+        self.assertIn("service.update(id, value)", controller)
+        self.assertIn("service.delete(id)", controller)
+        self.assertNotIn("PanacheEntity", controller)
+        self.assertNotIn("Uni<", controller)
+        self.assertNotIn(".asUni()", controller)
+        self.assertNotIn("Auth.findById", controller)
+        result = validate_file(controller_path, controller, "java")
+        self.assertTrue(result.passed, result.diagnostics)
+
+    def test_quarkus_reconciliation_preserves_genuine_active_record_module(self):
+        path = "Demo/backend/auth-service/src/main/java/com/acme/auth/controller/AuthController.java"
+        source = (
+            "package com.acme.auth.controller;\n"
+            "import com.acme.auth.model.Auth;\n"
+            "public class AuthController { Auth find(Long id) { return Auth.findById(id); } }\n"
+        )
+        output = {
+            path: source,
+            "Demo/backend/auth-service/src/main/java/com/acme/auth/model/Auth.java": (
+                "package com.acme.auth.model; import io.quarkus.hibernate.orm.panache.PanacheEntity; "
+                "public class Auth extends PanacheEntity {}"
+            ),
+        }
+
+        _reconcile_java_generation_output(
+            output, "Demo", {"backend_tech": "Java 21 Quarkus", "db_target": "postgres"},
+        )
+
+        controller = next(
+            content for generated_path, content in output.items()
+            if generated_path.endswith("/controller/AuthController.java")
+        )
+        self.assertEqual(source, controller)
+
+    def test_quarkus_reconciliation_normalizes_timestamp_annotation_hallucinations(self):
+        output = {"Demo/backend/src/main/java/com/acme/Event.java": (
+            "package com.acme;\nimport jakarta.persistence.Entity;\n"
+            "@Entity public class Event {\n"
+            " @CreatedTimestamp java.time.LocalDateTime createdAt;\n"
+            " @UpdatedTimestamp java.time.LocalDateTime updatedAt;\n}\n"
+        )}
+
+        _reconcile_java_generation_output(
+            output, "Demo", {"backend_tech": "Java 21 Quarkus", "db_target": "postgres"},
+        )
+
+        entity = next(content for generated_path, content in output.items() if generated_path.endswith("Event.java"))
+        self.assertIn("@CreationTimestamp", entity)
+        self.assertIn("@UpdateTimestamp", entity)
+        self.assertIn("import org.hibernate.annotations.CreationTimestamp;", entity)
+        self.assertIn("import org.hibernate.annotations.UpdateTimestamp;", entity)
+        self.assertNotIn("@CreatedTimestamp", entity)
+        self.assertNotIn("@UpdatedTimestamp", entity)
+
     def test_quarkus_reconciliation_closes_controller_entity_and_optional_contracts(self):
         root = "Demo/backend/auth-service/src/main/java/com/app/auth"
         controller_path = f"{root}/controller/AuthController.java"

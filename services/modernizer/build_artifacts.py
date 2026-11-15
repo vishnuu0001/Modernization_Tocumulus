@@ -1818,6 +1818,50 @@ def _reconcile_postgres_sql_dialect(output: dict[str, str], target_db: str) -> N
             output[path] = rewritten
 
 
+def _reconcile_java_orphaned_optional_map_mutations(output: dict[str, str]) -> None:
+    """Move setter calls back into the Optional.map lambda that owns them."""
+    setter = re.compile(
+        r"^(?P<indent>[ \t]*)(?P<receiver>[A-Za-z_$][\w$]*)\.set[A-Z][\w$]*"
+        r"\s*\([^;]*\);\s*(?P<newline>\r?\n)?$",
+    )
+    map_return = re.compile(
+        r"^(?P<indent>[ \t]*)return\b.*\.map\(\s*(?P<receiver>[A-Za-z_$][\w$]*)"
+        r"\s*->\s*\{\s*(?P<newline>\r?\n)?$",
+    )
+    for path, content in list(output.items()):
+        if not path.casefold().endswith(".java") or not isinstance(content, str):
+            continue
+        lines = content.splitlines(keepends=True)
+        index = 0
+        changed = False
+        while index < len(lines):
+            map_match = map_return.match(lines[index])
+            if not map_match:
+                index += 1
+                continue
+            receiver = map_match.group("receiver")
+            start = index
+            while start > 0:
+                setter_match = setter.match(lines[start - 1])
+                if not setter_match or setter_match.group("receiver") != receiver:
+                    break
+                start -= 1
+            if start == index:
+                index += 1
+                continue
+            mutations = lines[start:index]
+            del lines[start:index]
+            index = start
+            inner_indent = map_match.group("indent") + "    "
+            lines[index + 1:index + 1] = [
+                inner_indent + line.lstrip(" \t") for line in mutations
+            ]
+            changed = True
+            index += 1 + len(mutations)
+        if changed:
+            output[path] = "".join(lines)
+
+
 def _reconcile_java_database_provider_markers(
     output: dict[str, str], target_db: str,
 ) -> None:
@@ -2209,6 +2253,7 @@ def _reconcile_java_generation_output(
     _reconcile_java_console_logging_calls(output)
     _reconcile_jboss_logging_placeholders(output)
     _reconcile_java_mutating_optional_lambdas(output)
+    _reconcile_java_orphaned_optional_map_mutations(output)
     _remove_invalid_java_imports(output)
     _reconcile_java_spring_component_stereotypes(output)
     _reconcile_java_instance_utility_calls(output)
@@ -2245,6 +2290,7 @@ def _reconcile_java_generation_output(
     _reconcile_java_optional_assignment_contracts(output)
     _reconcile_java_service_interface_aliases(output)
     _reconcile_java_framework_http_contracts(output)
+    _reconcile_quarkus_repository_controller_topology(output, backend_tech=str((target or {}).get("backend_tech") or ""))
     _reconcile_java_controller_service_contracts(output)
     _reconcile_java_optional_map_returns(output)
     _reconcile_java_exception_constructors(output)
@@ -2408,6 +2454,7 @@ def _reconcile_java_generation_output(
             _java_service_application_yml(project_name),
         )
     _align_java_public_type_paths(output)
+    _reconcile_java_timestamp_annotation_names(output)
     _reconcile_java_auditing_contracts(output)
     for path, content in list(output.items()):
         if path.casefold().endswith(".java") and isinstance(content, str):
@@ -4746,22 +4793,38 @@ def _reconcile_java_controller_service_contracts(output: dict[str, str]) -> None
     for path, content in output.items():
         if not path.casefold().endswith("service.java") or not isinstance(content, str):
             continue
-        declared = re.search(r"\bclass\s+([A-Za-z_]\w*Service)\b", content)
-        if not declared:
+        module = _java_source_module(path)
+        interface = re.search(r"\binterface\s+([A-Za-z_]\w*Service)\b", content)
+        implementation = re.search(
+            r"\bclass\s+([A-Za-z_]\w*Service(?:Impl)?)\b"
+            r"(?:[^\{]*?\bimplements\s+([A-Za-z_]\w*Service)\b)?",
+            content,
+        )
+        if not interface and not implementation:
             continue
-        contracts: dict[str, str] = {}
-        for method in _JAVA_METHOD_DECLARATION.finditer(content):
-            if content[:method.start()].count("{") - content[:method.start()].count("}") == 1:
-                contracts.setdefault(method.group(2), method.group(1).strip())
-        services[(_java_source_module(path), declared.group(1))] = contracts
+        contracts = {
+            method.group("name"): method.group("return").strip()
+            for method in _JAVA_METHOD_CONTRACT.finditer(content)
+            if content[:method.start()].count("{") - content[:method.start()].count("}") == 1
+        }
+        names: set[str] = set()
+        if interface:
+            names.add(interface.group(1))
+        if implementation:
+            names.add(implementation.group(1))
+            if implementation.group(2):
+                names.add(implementation.group(2))
+        for name in names:
+            services[(module, name)] = contracts
 
     for path, content in list(output.items()):
         if not path.casefold().endswith("controller.java") or not isinstance(content, str):
             continue
         module = _java_source_module(path)
         dependencies = {
-            variable: services.get((module, service_type), {})
+            variable: services[(module, service_type)]
             for service_type, variable in re.findall(r"private\s+final\s+([A-Za-z_]\w*Service)\s+([A-Za-z_]\w*)\s*;", content)
+            if (module, service_type) in services
         }
         if not dependencies:
             continue
@@ -4819,6 +4882,70 @@ def _reconcile_java_controller_service_contracts(output: dict[str, str]) -> None
                         content,
                     )
         output[path] = content
+
+
+def _reconcile_quarkus_repository_controller_topology(
+    output: dict[str, str], *, backend_tech: str,
+) -> None:
+    """Replace only provably mixed Quarkus controller persistence topologies.
+
+    A module with ``PanacheRepository`` plus ``I<Domain>Service`` is repository
+    style.  Model-generated controllers have repeatedly crossed that boundary
+    by calling ``PanacheEntity.list()``, static entity find/delete methods, or
+    JAX-RS ``Response.asUni()``.  Those files can pass isolated source checks
+    but cannot compile with the module around them.  Genuine Active Record
+    modules (entity extends PanacheEntity and no matching service interface)
+    are intentionally outside this repair.
+    """
+    if "quarkus" not in (backend_tech or "").casefold():
+        return
+
+    module_sources: dict[str, dict[str, str]] = {}
+    for path, content in output.items():
+        if path.casefold().endswith(".java") and isinstance(content, str):
+            module_sources.setdefault(_java_source_module(path), {})[path] = content
+
+    from .scaffolds.java import _quarkus_controller
+
+    for path, content in list(output.items()):
+        match = re.search(r"/([A-Za-z_]\w*)Controller\.java$", path.replace("\\", "/"))
+        if not match or not isinstance(content, str):
+            continue
+        domain = match.group(1)
+        module = _java_source_module(path)
+        sources = module_sources.get(module, {})
+        interface_name = f"I{domain}Service"
+        interface_source = next((
+            source for source_path, source in sources.items()
+            if source_path.replace("\\", "/").endswith(f"/service/{interface_name}.java")
+            and re.search(rf"\binterface\s+{re.escape(interface_name)}\b", source)
+        ), None)
+        if interface_source is None:
+            continue
+
+        entity_match = re.search(
+            r"\bList\s*<\s*([A-Za-z_]\w*)\s*>\s+findAll\s*\(",
+            interface_source,
+        )
+        entity = entity_match.group(1) if entity_match else domain.rstrip("s")
+        static_entity_call = re.search(
+            rf"\b{re.escape(entity)}\s*\.\s*(?:find|list|count|delete|persist)\w*\s*\(",
+            content,
+        )
+        mixed = (
+            interface_name not in content
+            or bool(re.search(r"\bPanacheEntity(?:Base)?\b|\bUni\s*<|\.asUni\s*\(", content))
+            or bool(static_entity_call)
+        )
+        if not mixed:
+            continue
+
+        package_match = re.search(r"(?m)^\s*package\s+([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*;", content)
+        if not package_match:
+            continue
+        controller_package = package_match.group(1)
+        pkg = controller_package.removesuffix(".controller")
+        output[path] = _quarkus_controller(pkg, domain, entity)
 
 
 def _reconcile_java_exception_constructors(output: dict[str, str]) -> None:
@@ -7301,6 +7428,15 @@ def _reconcile_java_auditing_contracts(output: dict[str, str]) -> None:
         )
 
 
+def _reconcile_java_timestamp_annotation_names(output: dict[str, str]) -> None:
+    """Normalize recurrent timestamp annotation hallucinations."""
+    for path, content in list(output.items()):
+        if path.casefold().endswith(".java") and isinstance(content, str):
+            output[path] = content.replace(
+                "@CreatedTimestamp", "@CreationTimestamp",
+            ).replace("@UpdatedTimestamp", "@UpdateTimestamp")
+
+
 _KNOWN_JAVA_SYMBOL_IMPORTS = {
     "BigDecimal": "java.math.BigDecimal",
     "Instant": "java.time.Instant",
@@ -7315,6 +7451,8 @@ _KNOWN_JAVA_SYMBOL_IMPORTS = {
     "LastModifiedDate": "org.springframework.data.annotation.LastModifiedDate",
     "AuditingEntityListener": "org.springframework.data.jpa.domain.support.AuditingEntityListener",
     "EnableJpaAuditing": "org.springframework.data.jpa.repository.config.EnableJpaAuditing",
+    "CreationTimestamp": "org.hibernate.annotations.CreationTimestamp",
+    "UpdateTimestamp": "org.hibernate.annotations.UpdateTimestamp",
     "Set": "java.util.Set",
     "UUID": "java.util.UUID",
     "Base64": "java.util.Base64",

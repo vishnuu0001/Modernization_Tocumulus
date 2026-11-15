@@ -370,10 +370,110 @@ def _gen_quarkus_service(output: dict[str, str], root_ns: str, domain: str, tabl
     src  = f"{base}/src/main/java/{pkg.replace('.', '/')}"
 
     output[f"{base}/pom.xml"]                            = _quarkus_service_pom(root_ns, domain)
+    # The model-generated resource is retained when it obeys the repository /
+    # service topology.  ``setdefault`` also gives fallback-only generation a
+    # complete, compiler-safe HTTP boundary without overwriting a valid custom
+    # resource produced from source evidence.
+    output.setdefault(
+        f"{src}/controller/{domain}Controller.java",
+        _quarkus_controller(pkg, domain),
+    )
     output[f"{src}/repository/{domain}Repository.java"]  = _quarkus_repository(pkg, domain)
     output[f"{src}/service/I{domain}Service.java"]       = _spring_service_iface(pkg, domain)  # framework-agnostic
     output[f"{src}/service/{domain}ServiceImpl.java"]    = _quarkus_service_impl(pkg, domain)
     output[f"{base}/src/main/resources/application.properties"] = _quarkus_application_properties(domain)
+
+
+def _quarkus_controller(pkg: str, domain: str, entity: str | None = None) -> str:
+    """Return the canonical synchronous JAX-RS/service controller.
+
+    Quarkus supports both Panache Active Record and repository styles, but a
+    generated compilation unit must not mix them.  The deterministic domain
+    scaffold uses ``PanacheRepository`` behind ``I*Service``; this resource is
+    therefore deliberately free of static entity operations, Mutiny adapters,
+    entity constructors, and entity-specific business accessors.
+    """
+    entity = entity or domain.rstrip("s")
+    route = domain.lower()
+    return textwrap.dedent(f"""\
+        package {pkg}.controller;
+
+        import {pkg}.model.{entity};
+        import {pkg}.service.I{domain}Service;
+        import jakarta.enterprise.context.ApplicationScoped;
+        import jakarta.ws.rs.Consumes;
+        import jakarta.ws.rs.DELETE;
+        import jakarta.ws.rs.GET;
+        import jakarta.ws.rs.POST;
+        import jakarta.ws.rs.PUT;
+        import jakarta.ws.rs.Path;
+        import jakarta.ws.rs.PathParam;
+        import jakarta.ws.rs.Produces;
+        import jakarta.ws.rs.core.MediaType;
+        import jakarta.ws.rs.core.Response;
+        import java.util.List;
+        import org.jboss.logging.Logger;
+
+        @Path("/api/{route}")
+        @ApplicationScoped
+        @Produces(MediaType.APPLICATION_JSON)
+        @Consumes(MediaType.APPLICATION_JSON)
+        public class {domain}Controller {{
+            private static final Logger log = Logger.getLogger({domain}Controller.class);
+            private final I{domain}Service service;
+
+            public {domain}Controller(I{domain}Service service) {{
+                this.service = service;
+            }}
+
+            @GET
+            public List<{entity}> findAll() {{
+                return service.findAll();
+            }}
+
+            @GET
+            @Path("/{{id}}")
+            public Response findById(@PathParam("id") Long id) {{
+                return service.findById(id)
+                        .map(value -> Response.ok(value).build())
+                        .orElseGet(() -> {{
+                            log.warnf("{entity} not found: id=%s", id);
+                            return Response.status(Response.Status.NOT_FOUND).build();
+                        }});
+            }}
+
+            @POST
+            public Response create({entity} value) {{
+                {entity} created = service.create(value);
+                log.infof("Created {entity}");
+                return Response.status(Response.Status.CREATED).entity(created).build();
+            }}
+
+            @PUT
+            @Path("/{{id}}")
+            public Response update(@PathParam("id") Long id, {entity} value) {{
+                if (service.findById(id).isEmpty()) {{
+                    log.warnf("{entity} not found: id=%s", id);
+                    return Response.status(Response.Status.NOT_FOUND).build();
+                }}
+                {entity} updated = service.update(id, value);
+                log.infof("Updated {entity}: id=%s", id);
+                return Response.ok(updated).build();
+            }}
+
+            @DELETE
+            @Path("/{{id}}")
+            public Response delete(@PathParam("id") Long id) {{
+                if (service.findById(id).isEmpty()) {{
+                    log.warnf("{entity} not found: id=%s", id);
+                    return Response.status(Response.Status.NOT_FOUND).build();
+                }}
+                service.delete(id);
+                log.infof("Deleted {entity}: id=%s", id);
+                return Response.noContent().build();
+            }}
+        }}
+    """)
 
 
 # Function: _quarkus_parent_pom

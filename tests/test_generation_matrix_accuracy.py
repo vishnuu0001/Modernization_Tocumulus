@@ -18,6 +18,7 @@ from services.modernizer.build_artifacts import (
     _reconcile_java_console_logging_calls,
     _reconcile_java_generation_output,
     _reconcile_java_mutating_optional_lambdas,
+    _reconcile_java_orphaned_optional_map_mutations,
     _reconcile_postgres_sql_dialect,
     _rewrite_oracle_decode_calls,
 )
@@ -98,6 +99,31 @@ class Consumer {
         _reconcile_java_mutating_optional_lambdas(output)
 
         self.assertEqual(original, output[path])
+
+    def test_java_orphaned_optional_map_setters_are_restored_to_lambda_scope(self):
+        path = "Demo/backend/customer-service/src/main/java/com/app/CustomerServiceImpl.java"
+        output = {path: """package com.app;
+class CustomerServiceImpl {
+  Customer update(Long id, Customer updated) {
+      existing.setFirstName(updated.getFirstName());
+      existing.setLastName(updated.getLastName());
+    return repository.findByIdOptional(id).map(existing -> {
+      existing.setActive(updated.getActive());
+      return existing;
+    }).orElseThrow();
+  }
+}
+"""}
+
+        _reconcile_java_orphaned_optional_map_mutations(output)
+
+        rewritten = output[path]
+        map_position = rewritten.index(".map(existing -> {")
+        self.assertGreater(rewritten.index("existing.setFirstName", map_position), map_position)
+        self.assertGreater(rewritten.index("existing.setLastName", map_position), map_position)
+        first = rewritten
+        _reconcile_java_orphaned_optional_map_mutations(output)
+        self.assertEqual(first, output[path])
 
     def test_java_mutating_if_present_or_else_is_rewritten(self):
         path = "Demo/backend/app/src/main/java/com/app/ErrorHandler.java"

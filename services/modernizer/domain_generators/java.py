@@ -59,6 +59,20 @@ def _normalize_spring_entity_contract(content: str) -> str:
     return content[:closing_brace] + accessors + content[closing_brace:]
 
 
+def _quarkus_controller_violates_service_topology(content: str, domain: str) -> bool:
+    """Detect a model response that mixes Quarkus persistence paradigms."""
+    required_service = f"I{domain}Service"
+    if required_service not in content:
+        return True
+    incompatible = (
+        r"\bPanacheEntity(?:Base)?\b",
+        r"\bUni\s*<",
+        r"\.asUni\s*\(",
+        rf"\b{re.escape(domain.rstrip('s'))}\s*\.\s*(?:find|list|count|delete|persist)\w*\s*\(",
+    )
+    return any(re.search(pattern, content) for pattern in incompatible)
+
+
 
 # ─── LLM-powered domain generator ────────────────────────────────────────────
 
@@ -196,7 +210,7 @@ def _llm_domain_java(
     (Spring Boot / Quarkus / Micronaut) is selected from target['backend_tech']
     - see _gen_java_scaffold for the matching deterministic scaffold side."""
     from .._shared import _JAVA_FILE_GENERATION_MAX_SECONDS, _TOKENS_DEFAULT, _adaptive_num_ctx
-    from ..scaffolds.java import _gen_java_scaffold
+    from ..scaffolds.java import _gen_java_scaffold, _quarkus_controller
     from ..validation_orchestration import _generate_validated
     base = (
         f"ModernizedApp/services/{domain.lower()}-service/src/main/java"
@@ -258,6 +272,21 @@ def _llm_domain_java(
             on_validation(_result, _attempts)
         if not _result.passed:
             raise RuntimeError(f"Java validation failed for {_rel}: {'; '.join(_result.diagnostics)}")
+        if is_quarkus and _quarkus_controller_violates_service_topology(_content, domain):
+            # Syntax validation cannot detect that a plain JPA entity and a
+            # PanacheRepository service were paired with an Active Record or
+            # reactive controller.  Fail closed to the same deterministic
+            # contract used by the scaffold before this file enters cache.
+            _content = _quarkus_controller(
+                f"com.{root_ns.lower()}.{domain.lower()}", domain,
+            )
+            from services.validators import validate_file
+            _result = validate_file(_rel, _content, "java")
+            if not _result.passed:
+                raise RuntimeError(
+                    f"Deterministic Quarkus controller validation failed for {_rel}: "
+                    f"{'; '.join(_result.diagnostics)}"
+                )
         files[_rel] = _content
         generated_paths.add(_rel)
     except Exception as exc:
