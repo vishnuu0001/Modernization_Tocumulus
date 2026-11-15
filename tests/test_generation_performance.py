@@ -30,6 +30,39 @@ from services.modernizer.target_config import TARGET_STACKS
 
 
 class GenerationPerformanceTests(unittest.TestCase):
+    def test_source_closure_classifies_fetch_and_runtime_constants_without_react_prompt(self):
+        consumer = """
+import { fetchApi } from './fetch';
+import { TrainException, ResponseCode, TrainBean } from '../constant/ResponseCode';
+
+export async function loadTrain(id: string): Promise<TrainBean> {
+  const response = await fetchApi(`/api/trains/${id}`);
+  if (response.status !== ResponseCode.SUCCESS.getCode()) {
+    throw new TrainException(ResponseCode.INTERNAL_SERVER_ERROR.getCode());
+  }
+  return response.json() as Promise<TrainBean>;
+}
+"""
+        output = {
+            "Demo/frontend/src/components/Shashi/ShashiService.ts": consumer,
+        }
+
+        added = _pf_expand_generated_source_closure(output, "Demo")
+
+        fetch_path = "Demo/frontend/src/components/Shashi/fetch.ts"
+        response_path = "Demo/frontend/src/components/constant/ResponseCode.ts"
+        self.assertIn(fetch_path, added)
+        self.assertIn(response_path, added)
+        self.assertTrue(output[fetch_path].startswith(
+            "Create the missing non-React TypeScript runtime module"
+        ))
+        self.assertIn("- fetchApi(...)", output[fetch_path])
+        self.assertTrue(output[response_path].startswith(
+            "Create the missing non-React TypeScript data-contract module"
+        ))
+        self.assertNotIn("CONSUMER EVIDENCE", output[fetch_path])
+        self.assertNotIn("CONSUMER EVIDENCE", output[response_path])
+
     def test_conversion_cache_is_cleaned_and_strictly_revalidated(self):
         from services.modernizer import conversion_pipeline
         from services.validators import ValidationResult

@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from pathlib import Path
 from collections.abc import Callable
 
@@ -154,12 +155,64 @@ def _ollama_generate_all_sources(
     it — reintroducing the exact dialect-mismatch/API-drift bugs the pinned
     pack exists to prevent. Callers must pass every pinned path here.
     """
-    from .._shared import _FILE_GENERATION_MAX_SECONDS, _TOKENS_DEFAULT, _adaptive_num_ctx
+    from .._shared import (
+        _FILE_GENERATION_MAX_SECONDS, _TOKENS_DEFAULT, _TOKENS_LARGE,
+        _adaptive_num_ctx,
+    )
     from ..target_config import resolve_sql_dialect_hint
-    from ..validation_orchestration import _generate_validated
+    from ..validation_orchestration import _generate_validated as _generate_validated_once
     from services.validators import _resolve_sql_dialect
 
     exclude_paths = exclude_paths or frozenset()
+
+    def _generate_validated(prompt: str, **kwargs):
+        """Retry a discarded token-cutoff response once within one file budget."""
+        file_budget = float(
+            kwargs.get("generation_max_seconds") or _FILE_GENERATION_MAX_SECONDS
+        )
+        deadline = time.monotonic() + file_budget
+        initial_tokens = int(kwargs.get("max_tokens") or _TOKENS_DEFAULT)
+        token_budgets = (initial_tokens, max(initial_tokens, _TOKENS_LARGE))
+        for generation_pass, token_budget in enumerate(token_budgets, 1):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"Generation of {kwargs.get('rel_path', 'source')} exceeded the "
+                    f"{file_budget:.0f}s aggregate budget"
+                )
+            attempt_prompt = prompt
+            if generation_pass > 1:
+                attempt_prompt += (
+                    "\n\nTOKEN-LIMIT RECOVERY: The previous response was discarded in full. "
+                    "Restart this one file from the beginning and keep it deliberately concise "
+                    "(prefer under 160 lines). Emit only declarations and implementations required "
+                    "by this file contract. Do not repeat sections, consumer evidence, imports, "
+                    "types, methods, or explanations. Finish and close every construct."
+                )
+            call_kwargs = dict(kwargs)
+            call_kwargs["max_tokens"] = token_budget
+            call_kwargs["num_ctx"] = _adaptive_num_ctx(
+                len(attempt_prompt) + len(system), token_budget,
+            )
+            if generation_pass == 1:
+                call_kwargs["generation_max_seconds"] = (
+                    kwargs.get("generation_max_seconds") or _FILE_GENERATION_MAX_SECONDS
+                )
+            else:
+                call_kwargs["generation_max_seconds"] = remaining
+            try:
+                return _generate_validated_once(attempt_prompt, **call_kwargs)
+            except Exception as exc:
+                truncated = "truncated at the configured token limit" in str(exc).casefold()
+                if not truncated or generation_pass == len(token_budgets):
+                    raise
+                if on_step:
+                    on_step(
+                        f"Ollama output for {kwargs.get('rel_path', 'source')} reached "
+                        f"{token_budget:,} tokens; discarding it and retrying concisely "
+                        f"with {token_budgets[generation_pass]:,} tokens..."
+                    )
+
     sql_dialect = _resolve_sql_dialect(resolve_sql_dialect_hint(target))
     has_sql = any(
         Path(path).suffix.casefold() == ".sql" for path in files if path not in exclude_paths

@@ -15,6 +15,92 @@ from services.validators import ValidationResult
 
 
 class OllamaGenerationEnforcementTests(unittest.TestCase):
+    @patch("services.modernizer.validation_orchestration._generate_validated")
+    def test_token_cutoff_is_discarded_and_retried_once_with_concise_contract(self, generated):
+        path = "Demo/frontend/src/components/Shashi/fetch.ts"
+        generated.side_effect = [
+            RuntimeError(
+                "LLM output was truncated at the configured token limit; "
+                "no partial artifact was accepted"
+            ),
+            (
+                "export async function fetchApi(url: string): Promise<Response> { "
+                "return fetch(url); }\n",
+                ValidationResult(path, "typescript", "compiler", True, []),
+                1,
+            ),
+        ]
+        files = {
+            path: (
+                "Create the missing non-React TypeScript runtime module imported as ./fetch. "
+                "Export exactly these consumed runtime bindings: fetchApi."
+            ),
+        }
+        events = []
+
+        _ollama_generate_all_sources(
+            files, {"name": "React + Spring Boot", "language": "java"},
+            "Shashi", "qwen-test", "system", events.append, None,
+            generation_max_seconds=60,
+        )
+
+        self.assertEqual([4096, 8192], [
+            call.kwargs["max_tokens"] for call in generated.call_args_list
+        ])
+        self.assertNotIn("TOKEN-LIMIT RECOVERY", generated.call_args_list[0].args[0])
+        self.assertIn("TOKEN-LIMIT RECOVERY", generated.call_args_list[1].args[0])
+        self.assertIn("Do not repeat sections", generated.call_args_list[1].args[0])
+        self.assertTrue(all(call.kwargs["forbid_jsx"] for call in generated.call_args_list))
+        self.assertEqual(60, generated.call_args_list[0].kwargs["generation_max_seconds"])
+        self.assertLessEqual(
+            generated.call_args_list[1].kwargs["generation_max_seconds"], 60,
+        )
+        self.assertEqual(
+            "export async function fetchApi(url: string): Promise<Response> { "
+            "return fetch(url); }\n",
+            files[path],
+        )
+        self.assertTrue(any("discarding it" in event for event in events))
+
+    @patch("services.modernizer.validation_orchestration._generate_validated")
+    def test_repeated_token_cutoff_fails_closed_without_replacing_contract(self, generated):
+        path = "Demo/frontend/src/components/constant/ResponseCode.ts"
+        contract = (
+            "Create the missing non-React TypeScript data-contract module imported as "
+            "../constant/ResponseCode. Export exactly these consumed bindings: ResponseCode."
+        )
+        truncation = RuntimeError(
+            "LLM output was truncated at the configured token limit; "
+            "no partial artifact was accepted"
+        )
+        generated.side_effect = [truncation, truncation]
+        files = {path: contract}
+
+        with self.assertRaisesRegex(RuntimeError, "truncated at the configured token limit"):
+            _ollama_generate_all_sources(
+                files, {"name": "React + Spring Boot", "language": "java"},
+                "Shashi", "qwen-test", "system", None, None,
+                generation_max_seconds=60,
+            )
+
+        self.assertEqual(2, generated.call_count)
+        self.assertEqual(contract, files[path])
+
+    @patch("services.modernizer.validation_orchestration._generate_validated")
+    def test_non_token_generation_failure_is_not_retried(self, generated):
+        path = "Demo/frontend/src/components/Shashi/fetch.ts"
+        generated.side_effect = RuntimeError("model unavailable")
+        files = {path: "runtime contract"}
+
+        with self.assertRaisesRegex(RuntimeError, "model unavailable"):
+            _ollama_generate_all_sources(
+                files, {"name": "React + Spring Boot", "language": "java"},
+                "Shashi", "qwen-test", "system", None, None,
+            )
+
+        self.assertEqual(1, generated.call_count)
+        self.assertEqual("runtime contract", files[path])
+
     # Function: test_every_executable_source_is_reauthored_by_validated_ollama_call
     @patch("services.modernizer.validation_orchestration._generate_validated")
     def test_every_executable_source_is_reauthored_by_validated_ollama_call(self, generated):

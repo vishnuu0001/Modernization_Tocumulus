@@ -5803,14 +5803,42 @@ def _pf_expand_generated_source_closure(
                     for value in named_clause.group(1).split(",")
                     if value.strip()
                 ]
+            default_clause = re.match(r"([A-Za-z_$][\w$]*)", import_clause)
+            if default_clause and default_clause.group(1) not in {"type"}:
+                imported_names.insert(0, default_clause.group(1))
+            imported_names = list(dict.fromkeys(imported_names))
             basename = Path(target).name.casefold()
+            component_named = any(
+                token in basename
+                for token in ("route", "context", "page", "component", "provider", "view")
+            )
+            direct_runtime_calls = [
+                name for name in imported_names
+                if re.search(rf"\b{re.escape(name)}\s*\(", content)
+            ]
+            member_runtime_calls = {
+                name: list(dict.fromkeys(re.findall(
+                    rf"\b{re.escape(name)}\.([A-Za-z_$][\w$]*)\s*\(", content,
+                )))
+                for name in imported_names
+            }
+            transport_named = any(
+                token in basename
+                for token in ("client", "service", "api", "fetch", "transport", "http")
+            )
             data_contract = any(
                 token in basename
                 for token in (
                     ".dto", "-dto", "_dto", ".model", "-model", "_model",
                     ".schema", "-schema", "_schema", ".contract", "-contract",
-                    "_contract", "interface", "types",
+                    "_contract", "interface", "types", "constant", "responsecode",
                 )
+            ) or bool(
+                imported_names
+                and not component_named
+                and not transport_named
+                and not direct_runtime_calls
+                and not any(member_runtime_calls.values())
             )
             type_only = bool(
                 (import_match and import_match.group("type"))
@@ -5825,9 +5853,14 @@ def _pf_expand_generated_source_closure(
                     content,
                 )
             ]
-            is_component = not type_only and any(
-                token in basename
-                for token in ("route", "context", "page", "component", "provider")
+            is_component = not type_only and component_named
+            is_runtime_transport = bool(
+                not is_component
+                and (
+                    direct_runtime_calls
+                    or any(member_runtime_calls.values())
+                    or transport_named
+                )
             )
             new_path = target if extension in source_suffixes else target + (".tsx" if is_component else ".ts")
             if type_only:
@@ -5883,14 +5916,13 @@ def _pf_expand_generated_source_closure(
                     "of the consumer. Infer the required fields and their TypeScript types only from "
                     "the consumer evidence below.\n\n" + evidence
                 )
-            elif any(token in basename for token in ("client", "service", "api")):
+            elif is_runtime_transport:
                 required = ", ".join(imported_names) or import_clause or "the consumed runtime API"
                 call_evidence = []
                 for name in imported_names:
-                    for method in re.findall(
-                        rf"\b{re.escape(name)}\.([A-Za-z_$][\w$]*)\s*\(",
-                        content,
-                    ):
+                    if name in direct_runtime_calls:
+                        call_evidence.append(f"- {name}(...)")
+                    for method in member_runtime_calls[name]:
                         call_evidence.append(f"- {name}.{method}(...)")
                 contract = (
                     f"Create the missing non-React TypeScript runtime module imported as {specifier} "
