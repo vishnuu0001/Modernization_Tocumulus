@@ -91,6 +91,7 @@ def _api_service_prompt(framework: str, domain: str, context: str, prod_rules: s
         f"{context}\n{prod_rules}{grounding}\n\n"
         f"Generate one complete TypeScript API module for the {domain} feature using native fetch, AbortSignal support, encoded URLSearchParams, and strictly typed source-evidenced contracts. "
         "Use a relative /api base by default, report non-2xx status and response details safely, and do not invent CRUD methods absent from source evidence. "
+        "If an empty response is valid, declare that explicitly as void, null, or undefined in the operation's return type; otherwise throw a descriptive error instead of returning an absent value. "
         "Use either standard function declarations with block bodies or const arrow functions with an equals sign; never mix declaration syntax with an arrow token. "
         "This is a plain .ts transport module: never emit JSX, React elements, components, hooks, or HTML; use `value as Type` rather than angle-bracket type assertions. "
         "Return only source code."
@@ -171,6 +172,7 @@ def _llm_domain_typescript(
             num_ctx=_adaptive_num_ctx(len(prompt) + len(system), _TOKENS_MIGRATION),
             rel_path=_rel, language="typescript",
             max_attempts=3,
+            forbid_jsx=True,
             generation_max_seconds=_FILE_GENERATION_MAX_SECONDS,
             on_token=getattr(on_step, "on_token", None),
             on_attempt=(lambda a, m, _d=domain: on_step(f"[{_d}] Fixing API service layer — attempt {a}/{m}…")) if on_step else None,

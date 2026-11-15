@@ -138,8 +138,73 @@ class LlmValidationLoopTests(unittest.TestCase):
         self.assertEqual(complete, content)
         repair_prompt = generate.call_args_list[1].args[0]
         self.assertIn("PREVIOUS ATTEMPT WAS AN INCOMPLETE TRANSPORT STUB", repair_prompt)
-        self.assertIn("Never return null as a stub", repair_prompt)
+        self.assertIn("Never return null or undefined as a stub", repair_prompt)
         self.assertNotIn(stub.strip(), repair_prompt)
+
+    @patch("services.validators.validate_file")
+    @patch("services.llm.generate")
+    def test_plain_ts_undefined_stub_reauthors_without_invalid_source_anchor(self, generate, validate):
+        stub = (
+            "export async function loadTransaction(): Promise<Transaction> {\n"
+            "  if (!window.navigator.onLine) return undefined;\n"
+            "  return requestTransaction();\n"
+            "}\n"
+        )
+        complete = (
+            "export async function loadTransaction(): Promise<Transaction> {\n"
+            "  if (!window.navigator.onLine) throw new Error('Network unavailable');\n"
+            "  return requestTransaction();\n"
+            "}\n"
+        )
+        generate.side_effect = [stub, complete]
+        validate.return_value = ValidationResult(
+            "frontend/TransactionService.ts", "typescript", "compiler", True, [],
+        )
+
+        content, result, attempts = _generate_validated(
+            "FILE CONTRACT: implement the transaction transport operation",
+            model="test-model", system="typescript", max_tokens=2048, num_ctx=4096,
+            rel_path="frontend/TransactionService.ts", language="typescript",
+            max_attempts=3, forbid_jsx=True,
+        )
+
+        self.assertTrue(result.passed, result.diagnostics)
+        self.assertEqual(2, attempts)
+        self.assertEqual(complete, content)
+        repair_prompt = generate.call_args_list[1].args[0]
+        self.assertIn("PREVIOUS ATTEMPT WAS AN INCOMPLETE TRANSPORT STUB", repair_prompt)
+        self.assertIn("Never return null or undefined as a stub", repair_prompt)
+        self.assertNotIn(stub.strip(), repair_prompt)
+
+    @patch("services.llm.generate")
+    def test_generic_empty_body_decoder_with_typed_undefined_passes_strict_validation(self, generate):
+        generated = (
+            "async function decodeBody<T>(response: Response): Promise<T | undefined> {\n"
+            "  const text = await response.text();\n"
+            "  if (!text || text.trim() === '') {\n"
+            "    return undefined;\n"
+            "  }\n"
+            "  return JSON.parse(text) as T;\n"
+            "}\n"
+            "export async function loadTransaction(signal?: AbortSignal): Promise<unknown> {\n"
+            "  const response = await fetch('/api/transactions', { signal });\n"
+            "  if (!response.ok) throw new Error(`Transaction request failed: ${response.status}`);\n"
+            "  return (await decodeBody<unknown>(response)) ?? {};\n"
+            "}\n"
+        )
+        generate.return_value = generated
+
+        content, result, attempts = _generate_validated(
+            "Generate a typed transaction transport module",
+            model="test-model", system="typescript", max_tokens=2048, num_ctx=4096,
+            rel_path="ModernizedApp/src/components/Transaction/TransactionService.ts",
+            language="typescript", max_attempts=3, forbid_jsx=True,
+        )
+
+        self.assertTrue(result.passed, result.diagnostics)
+        self.assertEqual(1, attempts)
+        self.assertEqual(generated, content)
+        generate.assert_called_once()
 
     @patch("services.validators.validate_file")
     @patch("services.llm.generate")

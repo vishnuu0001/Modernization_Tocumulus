@@ -1253,7 +1253,7 @@ def _generate_validated(
                         "Discard the previous placeholder implementation completely. Re-author "
                         "the full plain .ts module from the FILE CONTRACT. Every exported API "
                         "operation must return its declared source-evidenced value or throw a "
-                        "descriptive error. Never return null as a stub; use no-value returns "
+                        "descriptive error. Never return null or undefined as a stub; use no-value returns "
                         "only for operations explicitly declared as Promise<void>."
                     )
                 else:

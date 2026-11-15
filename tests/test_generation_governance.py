@@ -671,6 +671,36 @@ def test_guarded_nullable_typescript_transport_result_is_not_a_placeholder():
     assert _first_placeholder(source, "frontend/CustomerService.ts") is None
 
 
+def test_guarded_typed_undefined_transport_result_is_not_a_placeholder():
+    from services.generation_governance import _first_placeholder
+
+    source = (
+        "async function decodeBody<T>(response: Response): Promise<T | undefined> {\n"
+        "  const text = await response.text();\n"
+        "  if (!text || text.trim() === '') {\n"
+        "    return undefined;\n"
+        "  }\n"
+        "  return JSON.parse(text) as T;\n"
+        "}\n"
+    )
+
+    assert _first_placeholder(source, "frontend/TransactionService.ts") is None
+
+
+def test_untyped_or_nonoptional_undefined_transport_stub_remains_blocked():
+    from services.generation_governance import _first_placeholder
+
+    source = (
+        "async function decodeBody<T>(response: Response): Promise<T> {\n"
+        "  const text = await response.text();\n"
+        "  if (!text) return undefined;\n"
+        "  return JSON.parse(text) as T;\n"
+        "}\n"
+    )
+
+    assert _first_placeholder(source, "frontend/TransactionService.ts") is not None
+
+
 def test_nullable_annotation_does_not_allow_an_unconditional_typescript_stub():
     from services.generation_governance import _first_placeholder
 

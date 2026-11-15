@@ -190,12 +190,12 @@ def _allowed_jsx_null_return_lines(content: str, path: str) -> set[int]:
 _TS_NULLABLE_FUNCTION_PATTERNS = (
     re.compile(
         r"(?ms)(?:^|\n)[ \t]*(?:(?:export|default|public|private|protected|static|async)\s+)*"
-        r"(?:function\s+)?[A-Za-z_$][\w$]*\s*\([^;{}]*\)\s*:\s*"
+        r"(?:function\s+)?[A-Za-z_$][\w$]*\s*(?:<[^>{}\n]+>\s*)?\([^;{}]*\)\s*:\s*"
         r"(?P<return>[^\n{]+?)\s*\{"
     ),
     re.compile(
         r"(?ms)(?:^|\n)[ \t]*(?:export\s+)?(?:const|let)\s+[A-Za-z_$][\w$]*"
-        r"(?:\s*:[^=\n]+)?\s*=\s*(?:async\s+)?\([^;{}]*\)\s*:\s*"
+        r"(?:\s*:[^=\n]+)?\s*=\s*(?:async\s+)?(?:<[^>{}\n]+>\s*)?\([^;{}]*\)\s*:\s*"
         r"(?P<return>[^\n{]+?)\s*=>\s*\{"
     ),
 )
@@ -221,44 +221,61 @@ def _return_is_if_guarded(content: str, match: re.Match) -> bool:
     return bool(re.search(r"(?s)\bif\s*\(.*\)\s*\{\s*$", guard_text))
 
 
-def _allowed_typed_nullable_null_return_lines(content: str, path: str) -> set[int]:
-    """Allow guarded null results promised by an explicit TypeScript type.
+def _allowed_typed_absent_return_lines(
+    content: str, path: str, token: str,
+) -> set[int]:
+    """Allow absent results promised by an explicit TypeScript return type.
 
     A transport lookup commonly maps an HTTP 404 to ``null`` under a declared
-    ``Promise<Entity | null>`` contract. That is a complete result branch, not
-    a placeholder. Keep the exemption narrow: plain TypeScript only, an
-    explicit nullable return annotation, an enclosing function body, and a
-    local ``if`` guard are all required. Unconditional/null-only functions
+    ``Promise<Entity | null>`` contract, while an empty-body decoder commonly
+    returns ``undefined`` under ``Promise<T | undefined>``. Those are complete
+    result branches, not placeholders. Keep the exemption narrow: plain
+    TypeScript only, an explicit matching return annotation, an enclosing
+    function body, and a local ``if`` guard are all required. An explicitly
+    void function may also return undefined. Untyped or unconditional stubs
     therefore continue to fail governance.
     """
     if PurePosixPath(path).suffix.casefold() != ".ts":
         return set()
-    functions: list[tuple[int, bool]] = []
+    functions: list[tuple[int, bool, bool]] = []
     for pattern in _TS_NULLABLE_FUNCTION_PATTERNS:
         for function_match in pattern.finditer(content):
             return_type = function_match.group("return")
             functions.append((
                 function_match.end() - 1,
-                bool(re.search(r"\bnull\b", return_type, re.IGNORECASE)),
+                bool(re.search(rf"\b{re.escape(token)}\b", return_type, re.IGNORECASE)),
+                token == "undefined" and bool(
+                    re.search(r"\bvoid\b", return_type, re.IGNORECASE)
+                ),
             ))
     if not functions:
         return set()
 
     allowed: set[int] = set()
-    for match in re.finditer(r"(?im)\breturn\s+null\s*;?\s*(?://.*)?$", content):
-        if not _return_is_if_guarded(content, match):
-            continue
-        for body_open, is_nullable in sorted(functions, reverse=True):
+    return_pattern = re.compile(
+        rf"(?im)\breturn\s+{re.escape(token)}\s*;?\s*(?://.*)?$",
+    )
+    for match in return_pattern.finditer(content):
+        guarded = _return_is_if_guarded(content, match)
+        for body_open, explicitly_absent, explicitly_void in sorted(functions, reverse=True):
             if body_open >= match.start():
                 continue
             # Braces inside expressions remain balanced; a positive depth at
             # the return proves this candidate function has not closed yet.
             body_prefix = content[body_open:match.start()]
             if body_prefix.count("{") > body_prefix.count("}"):
-                if is_nullable:
+                if (guarded and explicitly_absent) or explicitly_void:
                     allowed.add(content.count("\n", 0, match.start()) + 1)
                 break
     return allowed
+
+
+def _allowed_typed_nullable_null_return_lines(content: str, path: str) -> set[int]:
+    return _allowed_typed_absent_return_lines(content, path, "null")
+
+
+def _allowed_typed_undefined_return_lines(content: str, path: str) -> set[int]:
+    return _allowed_typed_absent_return_lines(content, path, "undefined")
 
 
 def _first_placeholder(content: str, path: str):
@@ -270,6 +287,9 @@ def _first_placeholder(content: str, path: str):
     allowed_typed_nullable_null_lines = _allowed_typed_nullable_null_return_lines(
         content, path,
     )
+    allowed_typed_undefined_lines = _allowed_typed_undefined_return_lines(
+        content, path,
+    )
     for match in _PLACEHOLDER_RE.finditer(content):
         line = content.count("\n", 0, match.start()) + 1
         token = match.group(0).strip().split("#", 1)[0].strip()
@@ -277,6 +297,9 @@ def _first_placeholder(content: str, path: str):
             continue
         if re.fullmatch(r"return\s+null\s*;?(?:\s*//.*)?", token, re.IGNORECASE) \
                 and line in allowed_jsx_null_lines | allowed_typed_nullable_null_lines:
+            continue
+        if re.fullmatch(r"return\s+undefined\s*;?(?:\s*//.*)?", token, re.IGNORECASE) \
+                and line in allowed_typed_undefined_lines:
             continue
         return match
     return None

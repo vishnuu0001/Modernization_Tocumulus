@@ -154,6 +154,36 @@ class JavaDomainCacheAdmissionTests(unittest.TestCase):
 
 
 class JavaFrontendGenerationFailureTests(unittest.TestCase):
+    def test_api_service_generation_uses_plain_typescript_reauthoring_route(self):
+        files = {}
+        component_result = ValidationResult(
+            "ModernizedApp/src/components/Transaction/TransactionPage.tsx",
+            "typescript", "compiler", True, [],
+        )
+        service_result = ValidationResult(
+            "ModernizedApp/src/components/Transaction/TransactionService.ts",
+            "typescript", "compiler", True, [],
+        )
+        with patch(
+            "services.modernizer.validation_orchestration._generate_validated",
+            side_effect=[
+                ("export const TransactionPage = () => <main />;", component_result, 1),
+                ("export const load = async () => ({ id: '1' });", service_result, 1),
+            ],
+        ) as generated:
+            paths = _llm_domain_typescript(
+                files, "Transaction", "Demo", [], "context", "rules", "source", "guide",
+                "model", "system", "React", {"name": "Java React"}, None,
+                lambda *_args, **_kwargs: "", None,
+            )
+
+        self.assertEqual(2, generated.call_count)
+        self.assertNotIn("forbid_jsx", generated.call_args_list[0].kwargs)
+        self.assertIs(True, generated.call_args_list[1].kwargs["forbid_jsx"])
+        self.assertIn(
+            "ModernizedApp/src/components/Transaction/TransactionService.ts", paths,
+        )
+
     def test_failed_frontend_validation_propagates_without_placeholder_source(self):
         files = {}
         failure = ValidationResult(
