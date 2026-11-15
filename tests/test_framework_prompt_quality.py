@@ -11,6 +11,15 @@ from services.modernizer.domain_generators.typescript import (
 
 
 class FrameworkPromptQualityTests(unittest.TestCase):
+    def test_domain_table_routing_never_falls_back_to_unrelated_tables(self):
+        self.assertEqual(
+            ["APP_USERS"],
+            dispatch._select_domain_tables("Auth", ["HISTORY", "TRAINS", "APP_USERS"]),
+        )
+        self.assertEqual(
+            [], dispatch._select_domain_tables("Inventory", ["HISTORY", "TRAINS"]),
+        )
+
     def test_react_prompt_bounds_component_size_and_forbids_mock_data(self):
         prompt = _ui_component_prompt(
             "React", "Shashi", {"frontend_tech": "React 18"},

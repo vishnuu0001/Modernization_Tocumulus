@@ -7,10 +7,52 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
+
+
+_DOMAIN_TABLE_ALIASES = {
+    "auth": {"account", "credential", "identity", "login", "profile", "user"},
+    "authentication": {"account", "credential", "identity", "login", "user"},
+    "customer": {"account", "client", "passenger", "profile", "user"},
+    "booking": {"history", "reservation", "ticket", "transaction"},
+    "reservation": {"booking", "history", "ticket", "transaction"},
+    "train": {"route", "schedule", "station", "train"},
+    "order": {"cart", "order", "purchase", "transaction"},
+    "payment": {"billing", "invoice", "payment", "transaction"},
+}
+
+
+def _select_domain_tables(domain: str, tables: list[str]) -> list[str]:
+    """Return only tables with positive lexical or semantic domain evidence.
+
+    The previous ``or tables[:3]`` fallback silently grounded unrelated
+    domains in whichever tables happened to be discovered first. That made
+    the same bad contract propagate into every language generator. An empty
+    result is intentionally safer: generators can use source evidence and the
+    domain name, but may not invent a mapping to an unrelated table.
+    """
+    domain_tokens = set(re.findall(r"[a-z0-9]+", domain.casefold()))
+    aliases = set().union(*(
+        _DOMAIN_TABLE_ALIASES.get(token, set()) for token in domain_tokens
+    ))
+    relevant_tokens = domain_tokens | aliases
+    scored: list[tuple[int, int, str]] = []
+    for position, table in enumerate(tables):
+        table_tokens = set(re.findall(r"[a-z0-9]+", str(table).casefold()))
+        score = 3 * len(domain_tokens & table_tokens) + len(aliases & table_tokens)
+        if score == 0 and any(
+            len(token) >= 4 and token in str(table).casefold()
+            for token in relevant_tokens
+        ):
+            score = 1
+        if score:
+            scored.append((score, -position, table))
+    scored.sort(reverse=True)
+    return [table for _score, _position, table in scored[:3]]
 
 _OLLAMA_SOURCE_SUFFIXES = {
     ".cs", ".java", ".kt", ".kts", ".ts", ".tsx", ".js", ".jsx", ".go",
@@ -461,7 +503,7 @@ def _llm_gen_domain(
     techs        = ", ".join(arch.get("detected_techs", []) or ["unknown"])
     loc          = arch.get("total_loc", 0)
     antipatterns = [i["type"] for i in analysis.get("antipatterns", [])[:5]]
-    domain_tables = [t for t in tables if domain.lower() in t.lower()] or tables[:3]
+    domain_tables = _select_domain_tables(domain, tables)
 
     guide_sec  = _guide_section(guide_text)
     source_sec = _source_section(folder_path, lang, domain)

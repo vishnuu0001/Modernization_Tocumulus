@@ -162,6 +162,74 @@ class JavaGenerationCapabilityMatrixTests(unittest.TestCase):
         )
         self.assertNotIn('log.info("Retrieving user by ID: {}", id)', controller)
 
+    def test_quarkus_reconciliation_closes_controller_entity_and_optional_contracts(self):
+        root = "Demo/backend/auth-service/src/main/java/com/app/auth"
+        controller_path = f"{root}/controller/AuthController.java"
+        service_path = f"{root}/service/AuthServiceImpl.java"
+        output = {
+            f"{root}/model/Auth.java": (
+                "package com.app.auth.model;\nimport jakarta.persistence.Entity;\n"
+                "@Entity public class Auth {\n private String mailId;\n public Auth() {}\n"
+                "public void setMailId(String value) { mailId=value; }\n}"
+            ),
+            f"{root}/dto/AuthRequest.java": (
+                "package com.app.auth.dto; public record AuthRequest(String fName, String mailId) {}"
+            ),
+            f"{root}/service/IAuthService.java": (
+                "package com.app.auth.service;\nimport java.util.*;\nimport com.app.auth.model.Auth;\n"
+                "public interface IAuthService {\n Optional<Auth> findById(Long id);\n"
+                " Auth update(Long id, Auth value);\n}"
+            ),
+            service_path: (
+                "package com.app.auth.service;\nimport java.util.*;\nimport com.app.auth.model.Auth;\n"
+                "public class AuthServiceImpl implements IAuthService {\n"
+                "public Optional<Auth> findById(Long id) { return Optional.empty(); }\n"
+                "public Auth update(Long id, Auth value) {\n Optional<Auth> found=Optional.empty();\n"
+                " return found.map(existing -> { return existing; });\n }\n}"
+            ),
+            controller_path: (
+                "package com.app.auth.controller;\nimport jakarta.ws.rs.core.Response;\n"
+                "import jakarta.servlet.http.HttpServletRequest;\n"
+                "import org.eclipse.microprofile.openapi.annotations.Operation;\n"
+                "import com.app.auth.model.Auth;\nimport com.app.auth.dto.AuthRequest;\n"
+                "import com.app.auth.service.IAuthService;\npublic class AuthController {\n"
+                "private final IAuthService authService;\nAuthController(IAuthService value) { authService=value; }\n"
+                "Response delete(Long id) { boolean found=authService.findByIdOptional(id).isPresent();\n"
+                "return found ? Response.noContent().build() : Response.notFound(Auth.class).build(); }\n"
+                "Auth map(AuthRequest request) {\n"
+                " return new Auth(null, request.fName(), request.mailId());\n }\n}"
+            ),
+        }
+
+        _reconcile_java_generation_output(
+            output, "Demo", {"backend_tech": "Java 21 Quarkus", "db_target": "postgres"},
+        )
+
+        controller = next(
+            content for content in output.values()
+            if isinstance(content, str) and "mappedAuth" in content
+        )
+        service = next(
+            content for content in output.values()
+            if isinstance(content, str) and "class AuthServiceImpl" in content
+        )
+        self.assertIn("authService.findById(id)", controller)
+        self.assertIn("Response.status(Response.Status.NOT_FOUND).build()", controller)
+        self.assertIn("Auth mappedAuth = new Auth();", controller)
+        self.assertIn("mappedAuth.setMailId(request.mailId());", controller)
+        self.assertNotIn("new Auth(null", controller)
+        self.assertIn(".orElseThrow(() -> new IllegalArgumentException", service)
+        auth_pom = next(
+            content for path, content in output.items()
+            if path.endswith("/pom.xml") and "quarkus-smallrye-openapi" in content
+        )
+        self.assertIn("quarkus-smallrye-openapi", auth_pom)
+        self.assertIn("jakarta.servlet-api", auth_pom)
+        self.assertRegex(
+            auth_pom,
+            r"<artifactId>jakarta\.servlet-api</artifactId>\s*<scope>provided</scope>",
+        )
+
     def test_framework_scoped_dependency_inference_rejects_cross_framework_leakage(self):
         source = {
             "Entity.java": (

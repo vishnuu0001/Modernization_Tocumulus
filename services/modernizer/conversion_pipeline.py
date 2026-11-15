@@ -1756,11 +1756,10 @@ def _dom_cache_key(
     ap_types = [a.get("type", "") for a in analysis.get("antipatterns", [])[:5]]
     metrics  = analysis.get("metrics", {})
     language = str(target.get("language", "")).casefold()
-    # v5 makes Java compilation-unit identity (path, package, and top-level
-    # type) part of the generation contract. Do not replay v4 artifacts that
-    # were validated before package/path consistency and fresh identity repair
-    # were enforced.
-    cache_version = "ollama-source-grounded-generation-v5-java-identity"
+    # v6 prevents every supported language from replaying domain artifacts
+    # produced by the former unrelated-table fallback. It also carries forward
+    # Java compilation-unit identity from v5.
+    cache_version = "ollama-source-grounded-generation-v6-domain-table-contract"
     source_fingerprint = ""
     if language == "java":
         # Java's old cache key depended only on LOC and the first few findings,

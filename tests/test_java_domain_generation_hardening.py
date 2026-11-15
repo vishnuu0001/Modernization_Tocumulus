@@ -314,6 +314,20 @@ class JavaDomainGeneratorTimeBudgetTests(unittest.TestCase):
                 self.assertIn("CustomersCreateRequest", prompt)
                 self.assertNotIn("class Customer with", prompt)
 
+    def test_non_spring_controller_prompts_bind_to_scaffold_contracts(self):
+        from services.modernizer.domain_generators.java import (
+            _java_controller_prompt_micronaut,
+            _java_controller_prompt_quarkus,
+        )
+
+        for builder in (_java_controller_prompt_quarkus, _java_controller_prompt_micronaut):
+            with self.subTest(builder=builder.__name__):
+                prompt = builder("Auth", "acme", ["APP_USERS"], [], "ctx", "", "", "")
+                self.assertIn("Optional<Auth> findById(Long)", prompt)
+                self.assertIn("void delete(Long)", prompt)
+                self.assertIn("do not invent aliases", prompt)
+                self.assertIn("Use Auth directly for request bodies", prompt)
+
     def test_all_java_domain_calls_pass_the_java_aggregate_time_budget(self):
         from services.modernizer._shared import _JAVA_FILE_GENERATION_MAX_SECONDS
         from services.modernizer.domain_generators.java import _llm_domain_java

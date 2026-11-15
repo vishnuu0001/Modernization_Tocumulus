@@ -719,6 +719,10 @@ _JAVA_IMPORT_DEPENDENCIES = {
     "org.apache.struts.tiles.": ("org.apache.struts", "struts-tiles", "1.3.10"),
     "org.apache.poi.": ("org.apache.poi", "poi", "5.3.0"),
     "org.apache.avro.": ("org.apache.avro", "avro", "1.12.0"),
+    "org.eclipse.microprofile.openapi.": (
+        "io.quarkus", "quarkus-smallrye-openapi", None,
+    ),
+    "jakarta.servlet.": ("jakarta.servlet", "jakarta.servlet-api", None),
 }
 
 
@@ -779,7 +783,7 @@ def _java_dependency_xml(
         version_xml = f"<version>{version}</version>" if version else ""
         scope = (
             "test" if artifact_id in {"junit-jupiter", "quarkus-junit5", "micronaut-test-junit5", "spring-security-test", "h2"} else
-            "provided" if artifact_id == "jakarta.jakartaee-api" else
+            "provided" if artifact_id in {"jakarta.jakartaee-api", "jakarta.servlet-api"} else
             "runtime" if artifact_id in {
                 "jjwt-impl", "jjwt-jackson", "postgresql", "mssql-jdbc",
                 "mysql-connector-j", "mariadb-java-client", "ojdbc11", "jcc", "sqlite-jdbc",
@@ -2235,7 +2239,10 @@ def _reconcile_java_generation_output(
     _reconcile_java_record_compatibility(output)
     _dedupe_java_methods(output)
     _reconcile_java_optional_assignment_contracts(output)
+    _reconcile_java_service_interface_aliases(output)
+    _reconcile_java_framework_http_contracts(output)
     _reconcile_java_controller_service_contracts(output)
+    _reconcile_java_optional_map_returns(output)
     _reconcile_java_exception_constructors(output)
     _reconcile_java_exception_call_contracts(output)
     _remove_misplaced_nested_record_accessors(output)
@@ -2245,6 +2252,7 @@ def _reconcile_java_generation_output(
     _migrate_java_record_getter_calls(output)
     _reconcile_java_entity_read_accessors(output)
     _reconcile_java_entity_update_copy_contracts(output)
+    _reconcile_java_entity_mapper_construction(output)
     _reconcile_java_entity_mutators(output)
     _reconcile_java_entity_constructors(output)
     _reconcile_java_bean_compatibility_constructors(output)
@@ -4470,6 +4478,170 @@ _JAVA_METHOD_CONTRACT = re.compile(
     r"(?P<name>[A-Za-z_$][\w$]*)\s*\((?P<params>[^)]*)\)"
     r"(?:\s+throws\s+[A-Za-z_$][\w.$]*(?:\s*,\s*[A-Za-z_$][\w.$]*)*)?\s*[;{]"
 )
+
+
+def _reconcile_java_framework_http_contracts(output: dict[str, str]) -> None:
+    """Normalize framework-specific HTTP factories without crossing stacks."""
+    for path, content in list(output.items()):
+        if not path.casefold().endswith(".java") or not isinstance(content, str):
+            continue
+        if "import jakarta.ws.rs.core.Response;" in content:
+            content = re.sub(
+                r"\bResponse\.notFound\s*\([^;]*?\)\.build\s*\(\s*\)",
+                "Response.status(Response.Status.NOT_FOUND).build()",
+                content,
+            )
+        output[path] = content
+
+
+def _reconcile_java_service_interface_aliases(output: dict[str, str]) -> None:
+    """Align generated callers with authoritative service interfaces.
+
+    This is intentionally limited to the unambiguous ``Optional`` suffix
+    hallucination. Broader fuzzy renaming could silently change business
+    behavior, so unsupported operations still flow to fail-closed validation.
+    """
+    contracts: dict[tuple[str, str], set[str]] = {}
+    for path, content in output.items():
+        if not path.casefold().endswith("service.java") or not isinstance(content, str):
+            continue
+        declared = re.search(r"\binterface\s+([A-Za-z_$][\w$]*Service)\b", content)
+        if declared:
+            contracts[(_java_source_module(path), declared.group(1))] = {
+                method.group("name") for method in _JAVA_METHOD_CONTRACT.finditer(content)
+            }
+    for path, content in list(output.items()):
+        if not path.casefold().endswith(".java") or not isinstance(content, str):
+            continue
+        module = _java_source_module(path)
+        for service_type, receiver in re.findall(
+            r"\b([A-Za-z_$][\w$]*Service)\s+([A-Za-z_$][\w$]*)\s*(?:[;,)])",
+            content,
+        ):
+            methods = contracts.get((module, service_type), set())
+            for method in methods:
+                content = re.sub(
+                    rf"\b{re.escape(receiver)}\.{re.escape(method)}Optional\s*\(",
+                    f"{receiver}.{method}(",
+                    content,
+                )
+        output[path] = content
+
+
+def _reconcile_java_optional_map_returns(output: dict[str, str]) -> None:
+    """Unwrap Optional.map when a method contract returns its entity type."""
+    for path, content in list(output.items()):
+        if not path.casefold().endswith(".java") or not isinstance(content, str):
+            continue
+        edits: list[tuple[int, str]] = []
+        for method in _JAVA_METHOD_DECLARATION.finditer(content):
+            return_type = " ".join(method.group(1).split())
+            if return_type.startswith(("Optional<", "java.util.Optional<")):
+                continue
+            end = _balanced_java_member_end(content, method.start())
+            if end is None:
+                continue
+            body = content[method.end():end]
+            optional_names = set(re.findall(
+                rf"\b(?:java\.util\.)?Optional\s*<\s*{re.escape(return_type)}\s*>\s+"
+                r"([A-Za-z_$][\w$]*)\s*=",
+                body,
+            ))
+            for name in optional_names:
+                for call in re.finditer(rf"\breturn\s+{re.escape(name)}\.map\s*\(", body):
+                    open_paren = method.end() + call.end() - 1
+                    span = _java_balanced_call_args(content, open_paren)
+                    if not span:
+                        continue
+                    close_paren = span[1]
+                    if re.match(r"\s*;", content[close_paren + 1:]):
+                        edits.append((close_paren + 1, (
+                            f'.orElseThrow(() -> new IllegalArgumentException('
+                            f'"{return_type} not found"))'
+                        )))
+        for position, addition in sorted(edits, reverse=True):
+            content = content[:position] + addition + content[position:]
+        output[path] = content
+
+
+def _reconcile_java_entity_mapper_construction(output: dict[str, str]) -> None:
+    """Replace invalid entity all-args construction with grounded setters.
+
+    Independently generated DTOs and entities can disagree on constructor
+    shape. Only accessor arguments whose property exists on the target entity
+    are copied; unrelated positional arguments are never guessed into columns.
+    """
+    entities: dict[tuple[str, str], set[str]] = {}
+    for path, content in output.items():
+        if not path.casefold().endswith(".java") or "@Entity" not in str(content):
+            continue
+        declared = re.search(r"\bclass\s+([A-Za-z_$][\w$]*)\b", content)
+        if declared:
+            fields = {
+                name for _field_type, name in re.findall(
+                    r"(?m)^\s*private\s+(?!static\b)([A-Za-z_$][\w$<>?,.\[\]]*)\s+"
+                    r"([A-Za-z_$][\w$]*)\s*(?:=[^;]*)?;",
+                    content,
+                )
+            }
+            entities[(_java_source_module(path), declared.group(1))] = fields
+    for path, content in list(output.items()):
+        if not path.casefold().endswith(".java") or not isinstance(content, str):
+            continue
+        module = _java_source_module(path)
+        edits: list[tuple[int, int, str]] = []
+        for (owner, entity), fields in entities.items():
+            if owner != module:
+                continue
+            constructor_arities = {
+                len(_split_java_arguments(match.group(1)))
+                for match in re.finditer(
+                    rf"\b(?:public|protected|private)\s+{re.escape(entity)}\s*\(([^)]*)\)",
+                    next((value for key, value in output.items() if (
+                        _java_source_module(key) == module and isinstance(value, str)
+                        and re.search(rf"\bclass\s+{re.escape(entity)}\b", value)
+                    )), ""),
+                )
+            }
+            if constructor_arities and 0 not in constructor_arities:
+                continue
+            for call in re.finditer(rf"(?m)^(?P<indent>[ \t]*)return\s+new\s+{re.escape(entity)}\s*\(", content):
+                span = _java_balanced_call_args(content, call.end() - 1)
+                if not span:
+                    continue
+                args = _split_java_arguments(content[span[0]:span[1]])
+                if not args or len(args) in constructor_arities:
+                    continue
+                statement_end = re.match(r"\s*;", content[span[1] + 1:])
+                if not statement_end:
+                    continue
+                assignments = []
+                for argument in args:
+                    accessor = re.search(
+                        r"\b([A-Za-z_$][\w$]*)\.(?:get|is)?([A-Za-z_$][\w$]*)\s*\(\s*\)\s*$",
+                        re.sub(r"//[^\r\n]*", "", argument).strip(),
+                    )
+                    if not accessor:
+                        continue
+                    prop = accessor.group(2)
+                    prop = prop[0].lower() + prop[1:]
+                    actual = next((field for field in fields if field.casefold() == prop.casefold()), None)
+                    if actual:
+                        cap = actual[0].upper() + actual[1:]
+                        assignments.append(f"mapped{entity}.set{cap}({accessor.group(0)});")
+                if not assignments:
+                    continue
+                indent = call.group("indent")
+                replacement = (
+                    f"{indent}{entity} mapped{entity} = new {entity}();\n"
+                    + "\n".join(f"{indent}{line}" for line in assignments)
+                    + f"\n{indent}return mapped{entity};"
+                )
+                end = span[1] + 1 + statement_end.end()
+                edits.append((call.start(), end, replacement))
+        for start, end, replacement in sorted(edits, reverse=True):
+            content = content[:start] + replacement + content[end:]
+        output[path] = content
 
 
 def _reconcile_java_optional_assignment_contracts(output: dict[str, str]) -> None:

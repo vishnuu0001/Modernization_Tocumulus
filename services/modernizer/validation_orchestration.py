@@ -1098,7 +1098,12 @@ def _generate_validated(
                 "record that extends Exception, RuntimeException, Error, or any other class: "
                 "Java records cannot extend classes. When org.jboss.logging.Logger is imported, "
                 "parameterized messages must use infof/debugf/warnf/errorf with printf "
-                "placeholders; never use SLF4J-style {} templates with info/debug/warn/error.\n"
+                "placeholders; never use SLF4J-style {} templates with info/debug/warn/error. "
+                "Treat declared service interfaces and entity constructors as authoritative: do "
+                "not invent method aliases or all-args constructors. Map DTO properties through "
+                "existing no-arg constructors and setters. For Jakarta JAX-RS use its Response "
+                "factories (for example Response.status(Response.Status.NOT_FOUND)); do not copy "
+                "Spring or convenience factories from another framework.\n"
             )
         if validation_language == "sql":
             effective_sql_dialect = (
