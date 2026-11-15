@@ -42,6 +42,16 @@ from services.build_runner import (
 
 
 class BuildRunnerIntegrityTests(unittest.TestCase):
+    def test_msys_cargo_environment_prioritizes_matching_linker_tools(self):
+        from services.tool_discovery import executable_environment
+
+        with patch("services.tool_discovery.os.name", "nt"), patch.dict(
+            "services.tool_discovery.os.environ", {"PATH": r"C:\FPC\bin"}, clear=True,
+        ):
+            environment = executable_environment(r"C:\msys64\ucrt64\bin\cargo.exe")
+
+        self.assertTrue(environment["PATH"].startswith(r"C:\msys64\ucrt64\bin"))
+
     def test_windows_timeout_terminates_the_package_manager_process_tree(self):
         class TimedOutProcess:
             pid = 4321

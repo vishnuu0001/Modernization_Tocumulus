@@ -140,6 +140,12 @@ def _configure_go(environment: dict[str, str], executable: Path) -> None:
     _configure_msys_tool(environment, executable, "GOROOT", Path("lib") / "go")
 
 
+def _configure_rust(environment: dict[str, str], executable: Path) -> None:
+    """Keep the GNU Rust linker tools from the selected MSYS2 distribution first."""
+    if "msys64" in str(executable).casefold():
+        _prepend_path(environment, str(executable.parent))
+
+
 def _configure_r(environment: dict[str, str], executable: Path) -> None:
     _configure_msys_tool(environment, executable, "R_HOME", Path("lib") / "R")
 
@@ -167,6 +173,8 @@ _ENVIRONMENT_HANDLERS = {
     "swiftc.exe": _configure_swift,
     "cobc.exe": _configure_cobol,
     "go.exe": _configure_go,
+    "cargo.exe": _configure_rust,
+    "rustc.exe": _configure_rust,
     "rscript.exe": _configure_r,
     **dict.fromkeys(_ERLANG_TOOLS, _configure_erlang),
     **dict.fromkeys(_JAVA_TOOLS, _configure_java),
