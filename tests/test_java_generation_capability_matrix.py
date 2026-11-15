@@ -162,6 +162,29 @@ class JavaGenerationCapabilityMatrixTests(unittest.TestCase):
         )
         self.assertNotIn('log.info("Retrieving user by ID: {}", id)', controller)
 
+    def test_quarkus_reconciliation_normalizes_nonexistent_location_builder(self):
+        path = "Demo/backend/customer-service/src/main/java/com/app/customer/CustomerController.java"
+        output = {path: (
+            "package com.app.customer;\n"
+            "import jakarta.ws.rs.core.Response;\n"
+            "public class CustomerController {\n"
+            " Response create(Long id) {\n"
+            "  return Response.status(Response.Status.CREATED).location("
+            "Response.locationBuilder(\"/api/customer/\" + id).build()).build();\n"
+            " }\n}\n"
+        )}
+
+        _reconcile_java_generation_output(
+            output, "Demo", {"backend_tech": "Java 21 Quarkus", "db_target": "postgres"},
+        )
+
+        controller = next(
+            content for content in output.values()
+            if isinstance(content, str) and "class CustomerController" in content
+        )
+        self.assertIn("jakarta.ws.rs.core.UriBuilder.fromPath", controller)
+        self.assertNotIn("Response.locationBuilder", controller)
+
     def test_quarkus_reconciliation_replaces_active_record_controller_in_repository_module(self):
         root = "Demo/backend/auth-service/src/main/java/com/comshashi/auth"
         controller_path = f"{root}/controller/AuthController.java"

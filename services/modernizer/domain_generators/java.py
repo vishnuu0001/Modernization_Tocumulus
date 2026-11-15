@@ -68,6 +68,7 @@ def _quarkus_controller_violates_service_topology(content: str, domain: str) -> 
         r"\bPanacheEntity(?:Base)?\b",
         r"\bUni\s*<",
         r"\.asUni\s*\(",
+        r"\bResponse\.locationBuilder\s*\(",
         rf"\b{re.escape(domain.rstrip('s'))}\s*\.\s*(?:find|list|count|delete|persist)\w*\s*\(",
     )
     return any(re.search(pattern, content) for pattern in incompatible)
@@ -105,6 +106,8 @@ def _java_controller_prompt_quarkus(domain, root_ns, domain_tables, antipatterns
         f"independently; do not invent DTOs, mappers, constructors, or nested types\n"
         f"- For 404 use Response.status(Response.Status.NOT_FOUND).build(); JAX-RS has no "
         f"Response.notFound(...) factory\n"
+        f"- For a Location header use jakarta.ws.rs.core.UriBuilder.fromPath(...).build(); "
+        f"Response.locationBuilder(...) does not exist\n"
         f"- log.info for successful operations, log.warn for not-found, log.error for exceptions\n"
         f"- Never catch generic Exception or Throwable; let unexpected exceptions propagate to the "
         f"ExceptionMapper — catch only the specific typed exceptions this method can actually throw\n"

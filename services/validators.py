@@ -1256,11 +1256,30 @@ def _spring_boot3_semantic_diagnostics(content: str, rel_path: str = "") -> list
     return diagnostics
 
 
+def _jakarta_ws_rs_semantic_diagnostics(content: str) -> list[str]:
+    """Reject known nonexistent JAX-RS factories hidden by classpath filtering."""
+    if "jakarta.ws.rs.core.Response" not in content:
+        return []
+    diagnostics: list[str] = []
+    if re.search(r"\bResponse\.locationBuilder\s*\(", content):
+        diagnostics.append(
+            "jakarta.ws.rs.core.Response has no locationBuilder(String) method; "
+            "use jakarta.ws.rs.core.UriBuilder.fromPath(...).build()"
+        )
+    if re.search(r"\bResponse\.notFound\s*\(", content):
+        diagnostics.append(
+            "jakarta.ws.rs.core.Response has no notFound(...) factory; "
+            "use Response.status(Response.Status.NOT_FOUND).build()"
+        )
+    return diagnostics
+
+
 # Function: _validate_java
 def _validate_java(rel_path: str, content: str, tmp_dir: Path) -> ValidationResult:
     semantic_diagnostics = (
         _java_import_diagnostics(content)
         + _spring_boot3_semantic_diagnostics(content, rel_path)
+        + _jakarta_ws_rs_semantic_diagnostics(content)
     )
     source_name = Path(rel_path).name
     normalized_path = rel_path.replace("\\", "/")

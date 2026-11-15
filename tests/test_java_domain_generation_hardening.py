@@ -376,6 +376,57 @@ class JavaDomainGeneratorTimeBudgetTests(unittest.TestCase):
         self.assertNotIn("PanacheEntity", controller)
         self.assertNotIn("Uni<", controller)
 
+    def test_quarkus_domain_generation_rejects_nonexistent_response_location_builder(self):
+        from services.modernizer.domain_generators.java import _llm_domain_java
+
+        controller_path = (
+            "ModernizedApp/services/customer-service/src/main/java/"
+            "com/acme/customer/controller/CustomerController.java"
+        )
+        entity_path = (
+            "ModernizedApp/services/customer-service/src/main/java/"
+            "com/acme/customer/model/Customer.java"
+        )
+        generated = [
+            (
+                "package com.acme.customer.controller;\n"
+                "import com.acme.customer.service.ICustomerService;\n"
+                "import jakarta.ws.rs.core.Response;\n"
+                "public class CustomerController {\n"
+                " private final ICustomerService service;\n"
+                " CustomerController(ICustomerService service) { this.service = service; }\n"
+                " Response create() { return Response.locationBuilder(\"/api/customer/1\").build(); }\n"
+                "}\n",
+                ValidationResult(controller_path, "java", "compiler", True, []),
+                1,
+            ),
+            (
+                "package com.acme.customer.model;\n"
+                "import jakarta.persistence.Entity;\n"
+                "@Entity public class Customer { public Customer() {} }\n",
+                ValidationResult(entity_path, "java", "compiler", True, []),
+                1,
+            ),
+        ]
+        files = {}
+
+        with patch(
+            "services.modernizer.validation_orchestration._generate_validated",
+            side_effect=generated,
+        ):
+            _llm_domain_java(
+                files=files, domain="Customer", root_ns="acme", domain_tables=["CUSTOMER"],
+                antipatterns=[], context="ctx", prod_rules="", source_sec="", guide_sec="",
+                model="qwen3.5:9b", system="sys", tables=["CUSTOMER"],
+                target={"backend_tech": "Java 21 Quarkus", "db_target": "postgres"},
+                on_step=None, generate=lambda *args, **kwargs: "",
+            )
+
+        controller = files[controller_path]
+        self.assertIn("private final ICustomerService service;", controller)
+        self.assertIn("return service.findAll();", controller)
+        self.assertNotIn("Response.locationBuilder", controller)
+
     def test_all_java_domain_calls_pass_the_java_aggregate_time_budget(self):
         from services.modernizer._shared import _JAVA_FILE_GENERATION_MAX_SECONDS
         from services.modernizer.domain_generators.java import _llm_domain_java

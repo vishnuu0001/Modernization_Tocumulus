@@ -4542,6 +4542,11 @@ def _reconcile_java_framework_http_contracts(output: dict[str, str]) -> None:
                 "Response.status(Response.Status.NOT_FOUND).build()",
                 content,
             )
+            content = re.sub(
+                r"\bResponse\.locationBuilder\s*\(",
+                "jakarta.ws.rs.core.UriBuilder.fromPath(",
+                content,
+            )
         output[path] = content
 
 

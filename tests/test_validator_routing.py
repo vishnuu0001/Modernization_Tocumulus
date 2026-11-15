@@ -365,6 +365,21 @@ public class ServiceImpl implements MissingService {
         result = validate_file("Broken.java", source, "java")
         self.assertFalse(result.passed)
 
+    def test_java_preflight_rejects_nonexistent_jaxrs_response_factories(self):
+        source = """
+package demo;
+import jakarta.ws.rs.core.Response;
+public class CustomerController {
+    Response create(Long id) {
+        return Response.status(Response.Status.CREATED)
+            .location(Response.locationBuilder("/api/customer/" + id).build()).build();
+    }
+}
+"""
+        result = validate_file("CustomerController.java", source, "java")
+        self.assertFalse(result.passed)
+        self.assertIn("Response has no locationBuilder", "\n".join(result.diagnostics))
+
     def test_java_single_file_preflight_rejects_split_blank_final_constructors(self):
         source = """
 package demo;
