@@ -119,6 +119,171 @@ def _repair_typescript_runtime_type_imports(content: str) -> str:
     return _TS_NAMESPACE_TYPE_IMPORT_RE.sub(repair_namespace, repaired)
 
 
+_TS_FUNCTION_DECLARATION_ARROW_RE = re.compile(
+    r"(?m)^(?P<head>[ \t]*(?:(?:export|default|declare|async)\s+)*"
+    r"function\s+[A-Za-z_$][\w$]*(?:\s*<[^{}\r\n]+>)?\s*"
+    r"\([^{}\r\n]*\)\s*(?::\s*[^={\r\n]+)?)\s*=>\s*\{"
+)
+_TS_CLASS_METHOD_ARROW_RE = re.compile(
+    r"(?m)^(?P<head>[ \t]*(?:(?:public|private|protected|static|async|abstract|override)\s+)*"
+    r"[A-Za-z_$][\w$]*(?:\s*<[^{}\r\n]+>)?\s*"
+    r"\((?!\s*\()[^{}\r\n]*\)\s*(?::\s*[^={\r\n]+)?)\s*=>\s*\{"
+)
+_TS_CONST_ARROW_MISSING_RE = re.compile(
+    r"(?m)^(?P<head>[ \t]*(?:export\s+)?const\s+[A-Za-z_$][\w$]*"
+    r"(?:\s*:\s*[^\r\n]+?)?\s*=(?!>)\s*"
+    r"(?:async\s*)?\([^{}\r\n]*\)\s*(?::\s*[^={\r\n]+)?)\s*\{"
+)
+_TS_INVALID_DEFAULT_CONST_RE = re.compile(
+    r"\bexport\s+default\s+const\s+(?P<name>[A-Za-z_$][\w$]*)\b"
+)
+
+
+def _repair_typescript_declaration_arrows(content: str) -> str:
+    """Repair TS1144 caused by mixing declarations with arrow syntax."""
+    if not content or "=>" not in content:
+        return content
+    repaired = _TS_FUNCTION_DECLARATION_ARROW_RE.sub(
+        lambda match: f"{match.group('head').rstrip()} {{", content,
+    )
+    return _TS_CLASS_METHOD_ARROW_RE.sub(
+        lambda match: f"{match.group('head').rstrip()} {{", repaired,
+    )
+
+
+def _repair_typescript_const_arrows(content: str) -> str:
+    """Repair a missing arrow in a const-assigned function or component."""
+    if not content or "const" not in content:
+        return content
+    return _TS_CONST_ARROW_MISSING_RE.sub(
+        lambda match: f"{match.group('head').rstrip()} => {{", content,
+    )
+
+
+def _repair_typescript_default_const(content: str) -> str:
+    """Rewrite invalid ``export default const`` while preserving both exports."""
+    names: list[str] = []
+
+    def replace(match: re.Match) -> str:
+        names.append(match.group("name"))
+        return f"export const {match.group('name')}"
+
+    repaired = _TS_INVALID_DEFAULT_CONST_RE.sub(replace, content or "")
+    for name in dict.fromkeys(names):
+        if not re.search(rf"\bexport\s+default\s+{re.escape(name)}\s*;", repaired):
+            repaired = repaired.rstrip() + f"\nexport default {name};\n"
+    return repaired
+
+
+def _repair_typescript_unmatched_export_prefix(content: str, diagnostics) -> str:
+    """Remove a compiler-proven unmatched closing token before an export line."""
+    lines = content.splitlines(keepends=True)
+    for diagnostic in diagnostics or ():
+        match = re.search(r"\bline\s+(\d+):1:\s*TS1128\b", str(diagnostic))
+        if not match:
+            continue
+        index = int(match.group(1)) - 1
+        if not (0 <= index < len(lines)):
+            continue
+        line = lines[index]
+        repaired_line = re.sub(
+            r"^(?P<indent>[ \t]*)[};]+\s*(?=export\b)",
+            lambda item: item.group("indent"), line, count=1,
+        )
+        if repaired_line != line:
+            lines[index] = repaired_line
+    return "".join(lines)
+
+
+def _repair_typescript_missing_arrows_from_diagnostics(content: str, diagnostics) -> str:
+    """Insert an arrow only at a body brace identified by the TS compiler."""
+    lines = content.splitlines(keepends=True)
+    for diagnostic in diagnostics or ():
+        match = re.search(
+            r"\bline\s+(\d+):(\d+):\s*TS1005:\s*['\"]?=>['\"]? expected\.",
+            str(diagnostic),
+        )
+        if not match:
+            continue
+        index = int(match.group(1)) - 1
+        column = int(match.group(2)) - 1
+        if not (0 <= index < len(lines)):
+            continue
+        line = lines[index]
+        if not line:
+            continue
+        brace_column = column if 0 <= column < len(line) and line[column] == "{" else None
+        if brace_column is None:
+            # TypeScript reports display columns while a model may indent with
+            # tabs; Python indexes the tab as one character. Resolve only a
+            # nearby brace and keep the compiler's `=> expected` diagnostic as
+            # the required proof that this is a function body.
+            nearby = [
+                offset for offset, character in enumerate(line)
+                if character == "{" and abs(offset - column) <= 8
+            ]
+            if not nearby:
+                continue
+            brace_column = min(nearby, key=lambda offset: abs(offset - column))
+        # A variable type may legitimately contain its own arrow, as in
+        # `const submit: () => void = async () {`. The compiler location
+        # identifies the implementation body brace, so no syntax guessing is
+        # needed and unrelated declarations remain untouched.
+        lines[index] = (
+            line[:brace_column].rstrip() + " => " + line[brace_column:]
+        )
+    return "".join(lines)
+
+
+def _repair_typescript_malformed_default_export(
+    content: str, diagnostics, rel_path: str,
+) -> str:
+    """Repair a compiler-proven malformed trailing export for the file component."""
+    symbol = Path(rel_path).stem
+    if not re.fullmatch(r"[A-Za-z_$][\w$]*", symbol):
+        return content
+    lines = content.splitlines(keepends=True)
+    diagnostic_lines = {
+        int(match.group(1))
+        for item in diagnostics or ()
+        if (match := re.search(r"\bline\s+(\d+):\d+:\s*TS(?:1109|1128)\b", str(item)))
+    }
+    for line_number in sorted(diagnostic_lines):
+        index = line_number - 1
+        if not (0 <= index < len(lines)) or "export default" not in lines[index]:
+            continue
+        prior = "".join(lines[:index])
+        declared_names = set(re.findall(
+            r"\b(?:function|class|const|let)\s+([A-Za-z_$][\w$]*)\b", prior,
+        ))
+        export_tail = lines[index].split("export default", 1)[1]
+        referenced_names = re.findall(r"\b[A-Za-z_$][\w$]*\b", export_tail)
+        selected = symbol if symbol in declared_names else next(
+            (name for name in reversed(referenced_names) if name in declared_names),
+            "",
+        )
+        if not selected:
+            continue
+        already_default = re.search(
+            rf"\bexport\s+default\s+(?:function\s+|class\s+)?{re.escape(selected)}\b",
+            prior,
+        )
+        newline = "\r\n" if lines[index].endswith("\r\n") else "\n"
+        lines[index] = newline if already_default else f"export default {selected};{newline}"
+    return "".join(lines)
+
+
+def _repair_typescript_source(content: str) -> str:
+    """Apply safe, source-local TypeScript repairs before validation."""
+    return _repair_typescript_default_const(
+        _repair_typescript_const_arrows(
+            _repair_typescript_declaration_arrows(
+                _repair_typescript_runtime_type_imports(content)
+            )
+        )
+    )
+
+
 _CSHARP_NAMESPACE_RE = re.compile(
     r"(?m)^\s*namespace\s+([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*[;{]"
 )
@@ -386,6 +551,21 @@ def _clean_generated_content(content: str) -> str:
         closing = re.search(r"(?is)\s*</generated_file>\s*", text)
         if closing:
             text = text[:closing.start()]
+    # Some local-model repair responses append governance protocol fragments
+    # even when the prompt did not request an envelope. They are transport
+    # metadata, never valid source. Truncate a complete notes section and
+    # remove orphan closing tags only when they occupy their own line, so
+    # string literals containing similar text remain untouched.
+    notes_open = re.search(
+        r"(?im)^[ \t]*<generation_notes(?:\s+[^>]*)?>[ \t]*$", text,
+    )
+    if notes_open:
+        text = text[:notes_open.start()].rstrip()
+    text = re.sub(
+        r"(?im)^[ \t]*</?(?:generated_file|generation_notes)>[ \t]*(?:\r?\n|$)",
+        "",
+        text,
+    )
     lines = text.splitlines()
     fence_positions = [i for i, line in enumerate(lines) if re.fullmatch(r"```[\w.+-]*", line.strip())]
     if fence_positions:
@@ -415,6 +595,31 @@ def _validation_diagnostic_fingerprint(diagnostics) -> tuple[str, ...]:
         value = re.sub(r"\(\d+[, :]\d+\)", "(location)", value)
         normalized.append(" ".join(value.split()))
     return tuple(sorted(normalized))
+
+
+def _validation_failure_excerpt(content: str, diagnostics, *, radius: int = 1) -> str:
+    """Return bounded generated-source context around compiler-reported lines."""
+    source_lines = (content or "").splitlines()
+    reported = {
+        int(match.group(1))
+        for item in diagnostics or ()
+        if (match := re.search(r"\bline\s+(\d+)(?::\d+)?\b", str(item)))
+    }
+    selected: set[int] = set()
+    for line_number in reported:
+        selected.update(range(max(1, line_number - radius), line_number + radius + 1))
+    if not selected:
+        nonempty = [
+            index for index, line in enumerate(source_lines, start=1) if line.strip()
+        ]
+        selected.update(nonempty[:6])
+        selected.update(nonempty[-2:])
+    snippets = []
+    for line_number in sorted(selected):
+        if 1 <= line_number <= len(source_lines):
+            value = source_lines[line_number - 1].replace("\t", "\\t").rstrip()[:240]
+            snippets.append(f"{line_number}: {value}")
+    return " | ".join(snippets[:12])
 
 
 def _truncation_shaped_diagnostics(diagnostics) -> bool:
@@ -665,6 +870,7 @@ def _generate_validated(
     generation_attempt_max_seconds: float | None = None,
     require_governance_envelope: bool = False,
     initial_content: str | None = None,
+    forbid_jsx: bool = False,
 ) -> tuple[str, ValidationResult, int]:
     """
     Generate one file's content, then syntax-validate it (see services/validators.py)
@@ -688,7 +894,37 @@ def _generate_validated(
     from services.validators import _infer_sql_dialect, _resolve_sql_dialect, validate_file
 
     def deterministic_source_repair(current: str, current_result):
-        if current_result.language != "java" or current_result.passed:
+        if current_result.passed:
+            return current, current_result
+        if current_result.language in {"typescript", "javascript"}:
+            repaired = current
+            repaired_result = current_result
+            # A malformed response can contain independent parser defects.
+            # Revalidate after each deterministic pass so fixing an early
+            # missing arrow can expose and then repair a trailing export error
+            # without spending another model inference attempt.
+            for _ in range(3):
+                candidate = _repair_typescript_missing_arrows_from_diagnostics(
+                    repaired, repaired_result.diagnostics,
+                )
+                candidate = _repair_typescript_malformed_default_export(
+                    candidate, repaired_result.diagnostics, validation_path,
+                )
+                candidate = _repair_typescript_unmatched_export_prefix(
+                    candidate, repaired_result.diagnostics,
+                )
+                candidate = _repair_typescript_source(candidate)
+                if candidate == repaired:
+                    break
+                repaired = candidate
+                repaired_result = validate_file(
+                    validation_path, repaired, current_result.language,
+                    dialect_hint=dialect,
+                )
+                if repaired_result.passed:
+                    break
+            return repaired, repaired_result
+        if current_result.language != "java":
             return current, current_result
         from .build_artifacts import _apply_deterministic_java_diagnostic_repairs
         candidate = {validation_path: current}
@@ -764,7 +1000,7 @@ def _generate_validated(
     else:
         content = _clean_generated_content(initial_content)
     if language in {"typescript", "javascript"} or Path(rel_path).suffix.casefold() in {".ts", ".tsx", ".js", ".jsx"}:
-        content = _repair_typescript_runtime_type_imports(content)
+        content = _repair_typescript_source(content)
     if language == "sql":
         content = _normalize_oracle_package_terminators(content, dialect)
         content = _repair_oracle_multirow_values(content, dialect)
@@ -812,6 +1048,19 @@ def _generate_validated(
             if truncation_recovery else max_tokens
         )
         diagnostics_block = "\n".join(f"- {d}" for d in result.diagnostics) or "- (no specific diagnostics)"
+        java_file_identity_mismatch = bool(
+            validation_language == "java"
+            and any(
+                marker in str(item)
+                for item in result.diagnostics
+                for marker in (
+                    "must declare its filename-matching type",
+                    "contains no type declaration",
+                    "must declare path-matching package",
+                    "does not match source path package",
+                )
+            )
+        )
         language_repair_rules = ""
         if validation_language in {"typescript", "javascript"}:
             language_repair_rules = (
@@ -819,9 +1068,19 @@ def _generate_validated(
                 "file is a React/JSX component; standalone TypeScript logic must not contain JSX. "
                 "Balance every JSX opening/closing tag, brace, parenthesis, bracket, string, "
                 "template literal, and regular-expression delimiter. Do not write HTML markup "
-                "outside a JSX expression. Return one complete source file, never a markdown "
+                "outside a JSX expression. Never combine declaration and arrow syntax: use "
+                "`function load() {}` or `const load = () => {}`, and use `load() {}` for a "
+                "class method; never emit `function load() => {}` or `load() => {}` as a method. "
+                "Return one complete source file, never a markdown "
                 "fence or a filename header.\n"
             )
+            if forbid_jsx:
+                language_repair_rules += (
+                    "This file is a non-React plain TypeScript module. Its .ts path is "
+                    "authoritative and cannot contain JSX grammar. Do not rename it to .tsx. "
+                    "Remove React imports, hooks, components, HTML tags, fragments, and UI "
+                    "rendering; implement only the requested data/transport/runtime contract.\n"
+                )
         if validation_language == "java":
             language_repair_rules = (
                 "\nJava/Spring Boot 3 repair rules: use jakarta.* rather than legacy javax.* "
@@ -915,6 +1174,38 @@ def _generate_validated(
                 "Return the complete corrected file using the same governed "
                 "<generated_file> and <generation_notes> response envelope."
             )
+        elif java_file_identity_mismatch:
+            normalized_java_path = rel_path.replace("\\", "/")
+            expected_type = Path(rel_path).stem
+            expected_package = ""
+            if "/src/main/java/" in normalized_java_path:
+                expected_package = (
+                    normalized_java_path.split("/src/main/java/", 1)[1]
+                    .rsplit("/", 1)[0]
+                    .replace("/", ".")
+                )
+            package_rule = (
+                f"Its package declaration must be exactly `package {expected_package};`.\n"
+                if expected_package else ""
+            )
+            fix_prompt = (
+                "AUTHORITATIVE JAVA FILE IDENTITY (highest priority):\n"
+                f"- Output path: {rel_path}\n"
+                f"- The filename-matching top-level type must be named {expected_type}.\n"
+                f"- {package_rule}"
+                "- Emit exactly one public top-level type. Constructors and self-references must "
+                f"also use {expected_type}.\n"
+                "- Source evidence may contain legacy or neighboring type/package names; use it "
+                "only for behavior and fields, never as the output file identity.\n\n"
+                f"ORIGINAL FILE CONTRACT:\n{prompt}\n\n"
+                "--- PREVIOUS ATTEMPT VIOLATED JAVA FILE IDENTITY ---\n"
+                f"Issues found:\n{diagnostics_block}\n\n"
+                f"{language_repair_rules}\n"
+                "Discard the previous file completely and regenerate from the authoritative "
+                "identity and original contract. Do not quote or preserve the previous wrong "
+                "class, interface, record, enum, package, or table identity. Return the complete "
+                "corrected Java source only, without markdown fences."
+            )
         else:
             truncation_instruction = (
                 "\nTRUNCATION RECOVERY: The previous artifact ended before its syntax tree "
@@ -924,18 +1215,69 @@ def _generate_validated(
                 "response. Do not append only closing tokens.\n"
                 if truncation_recovery else ""
             )
-            fix_prompt = (
-                f"{prompt}\n\n"
-                "--- PREVIOUS ATTEMPT FAILED VALIDATION ---\n"
-                f"Validator: {result.checker}\n"
-                f"Issues found:\n{diagnostics_block}\n\n"
-                f"{language_repair_rules}{truncation_instruction}\n"
-                "--- PREVIOUS ATTEMPT CONTENT ---\n"
-                f"{content}\n\n"
-                "Fix ONLY the reported issues. Keep all other names, structure, and logic unchanged. "
-                "Output the COMPLETE corrected file using the same governed "
-                "<generated_file> and <generation_notes> response envelope. No markdown fences."
+            jsx_role_mismatch = bool(
+                forbid_jsx
+                and any("TS17004" in str(item) for item in result.diagnostics)
             )
+            incomplete_plain_ts = bool(
+                forbid_jsx
+                and result.checker == "source-completeness"
+                and any("incomplete placeholder construct" in str(item) for item in result.diagnostics)
+            )
+            if jsx_role_mismatch or incomplete_plain_ts or truncation_recovery:
+                # Repeating the invalid component in the repair prompt anchors
+                # small models to its JSX. The same applies to a placeholder
+                # body or an EOF-shaped/truncated file. In all three cases,
+                # embedding the failed source and saying "keep structure"
+                # contradicts the required complete rewrite. Re-author from
+                # the authoritative file contract without that anchor.
+                if jsx_role_mismatch:
+                    failure_heading = "PREVIOUS ATTEMPT USED THE WRONG FILE ROLE"
+                    recovery_rule = (
+                        "Discard the previous React/JSX attempt completely. Re-author this file "
+                        "from the FILE CONTRACT as a plain .ts module. Do not preserve or quote "
+                        "the previous component structure."
+                    )
+                elif incomplete_plain_ts:
+                    failure_heading = "PREVIOUS ATTEMPT WAS AN INCOMPLETE TRANSPORT STUB"
+                    recovery_rule = (
+                        "Discard the previous placeholder implementation completely. Re-author "
+                        "the full plain .ts module from the FILE CONTRACT. Every exported API "
+                        "operation must return its declared source-evidenced value or throw a "
+                        "descriptive error. Never return null as a stub; use no-value returns "
+                        "only for operations explicitly declared as Promise<void>."
+                    )
+                else:
+                    failure_heading = "PREVIOUS ATTEMPT WAS STRUCTURALLY INCOMPLETE"
+                    recovery_rule = (
+                        "Discard the structurally incomplete attempt completely. Re-author the "
+                        "entire file from the FILE CONTRACT, keep the implementation concise, "
+                        "include every required export, and close every expression and declaration "
+                        "before the end of the response. Do not append only closing tokens."
+                    )
+                fix_prompt = (
+                    f"{prompt}\n\n"
+                    f"--- {failure_heading} ---\n"
+                    f"Validator: {result.checker}\n"
+                    f"Issues found:\n{diagnostics_block}\n\n"
+                    f"{language_repair_rules}{truncation_instruction}\n"
+                    f"{recovery_rule} Output the COMPLETE corrected file "
+                    "using the same governed <generated_file> and <generation_notes> response "
+                    "envelope. No markdown fences."
+                )
+            else:
+                fix_prompt = (
+                    f"{prompt}\n\n"
+                    "--- PREVIOUS ATTEMPT FAILED VALIDATION ---\n"
+                    f"Validator: {result.checker}\n"
+                    f"Issues found:\n{diagnostics_block}\n\n"
+                    f"{language_repair_rules}{truncation_instruction}\n"
+                    "--- PREVIOUS ATTEMPT CONTENT ---\n"
+                    f"{content}\n\n"
+                    "Fix ONLY the reported issues. Keep all other names, structure, and logic unchanged. "
+                    "Output the COMPLETE corrected file using the same governed "
+                    "<generated_file> and <generation_notes> response envelope. No markdown fences."
+                )
         fix_num_ctx = _adaptive_num_ctx(
             len(fix_prompt) + len(system or ""), repair_max_tokens,
         )
@@ -954,7 +1296,7 @@ def _generate_validated(
             else raw_response
         )
         if language in {"typescript", "javascript"} or Path(rel_path).suffix.casefold() in {".ts", ".tsx", ".js", ".jsx"}:
-            content = _repair_typescript_runtime_type_imports(content)
+            content = _repair_typescript_source(content)
         if language == "sql":
             content = _normalize_oracle_package_terminators(content, dialect)
             content = _repair_oracle_multirow_values(content, dialect)
@@ -987,18 +1329,32 @@ def _generate_validated(
                 len(result.diagnostics), time.monotonic() - generation_started,
             )
         if (
-            language in {"java", "csharp", "typescript", "javascript"}
+            language in {"java", "csharp"}
             and not result.passed
             and _validation_diagnostic_fingerprint(result.diagnostics) == _pre_repair_diagnostics
             and not _truncation_shaped_diagnostics(result.diagnostics)
+            and not any(
+                "Broad Exception/Throwable catches are forbidden" in str(item)
+                for item in result.diagnostics
+            )
+            and not java_file_identity_mismatch
         ):
             # Repeating byte-for-byte identical compiler diagnostics means the
             # repair did not improve this file. Another nearly identical prompt
             # burns a full local inference call without a useful new signal.
-            # Apply this convergence check to Java and C#, whose compiler
-            # validators provide stable, source-specific diagnostics.
+            # Apply this convergence check only to Java and C#, whose compiler
+            # validators provide stable, source-specific diagnostics. TypeScript
+            # repair responses can expose a later parser error with the same TS
+            # code, so they must receive their configured final attempt.
             break
 
+    if not result.passed:
+        excerpt = _validation_failure_excerpt(content, result.diagnostics)
+        logger.error(
+            "Generated source validation exhausted path=%s language=%s attempts=%d "
+            "diagnostics=%s source_excerpt=%s",
+            rel_path, validation_language, attempt, result.diagnostics[:8], excerpt,
+        )
     return content, result, attempt
 
 

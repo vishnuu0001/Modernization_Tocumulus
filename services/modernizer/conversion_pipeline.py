@@ -582,11 +582,16 @@ def _mp_run_domain_generation(
         logger.error("Domain generation abandoned for %s: %s", _orig, _message)
         _domain_failures.append((_orig, _exc))
     if _domain_failures:
-        failed_domains = ", ".join(name for name, _exc in _domain_failures)
+        ordered_failures = sorted(_domain_failures, key=lambda item: item[0].casefold())
+        failed_domains = ", ".join(name for name, _exc in ordered_failures)
+        failure_details = " | ".join(
+            f"{name}: {' '.join(str(exc).split())[:600]}"
+            for name, exc in ordered_failures
+        )
         raise RuntimeError(
             f"{lang.title()} domain generation did not produce validated complete artifacts: "
-            f"{failed_domains}"
-        ) from _domain_failures[0][1]
+            f"{failed_domains}. Domain diagnostics: {failure_details}"
+        ) from ordered_failures[0][1]
 
 
 # Function: _mp_ensure_java_service_modules_populated
@@ -774,9 +779,6 @@ def modernize_project(
 
     output: dict[str, str] = {}
 
-    progress("generating", 52, f"Generating README for '{target['name']}'...")
-    output["ModernizedApp/README.md"] = _readme(analysis, root_ns, target)
-
     # ── Database migration scripts ──────────────────────────────────────────
     if db_target:
         progress("generating", 55, f"Generating {target['db_tech']} database artifacts...")
@@ -805,6 +807,10 @@ def modernize_project(
             "Modernization requires an available code-generation model. "
             "Annotated source copies and generic offline templates are disabled."
         )
+    progress("generating", 52, f"Generating README for '{target['name']}'...")
+    output["ModernizedApp/README.md"] = _readme(
+        analysis, root_ns, target, llm_model=llm_model,
+    )
 
     # Per-file syntax-validation results, shared (via one thread-safe callback)
     # across both the parallel domain-generation workers below AND the
@@ -1750,7 +1756,11 @@ def _dom_cache_key(
     ap_types = [a.get("type", "") for a in analysis.get("antipatterns", [])[:5]]
     metrics  = analysis.get("metrics", {})
     language = str(target.get("language", "")).casefold()
-    cache_version = "ollama-source-grounded-generation-v4-metadata"
+    # v5 makes Java compilation-unit identity (path, package, and top-level
+    # type) part of the generation contract. Do not replay v4 artifacts that
+    # were validated before package/path consistency and fresh identity repair
+    # were enforced.
+    cache_version = "ollama-source-grounded-generation-v5-java-identity"
     source_fingerprint = ""
     if language == "java":
         # Java's old cache key depended only on LOC and the first few findings,

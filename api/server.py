@@ -1550,6 +1550,7 @@ async def export_requirement_document(project_id: str, document_type: str):
 
 def _generate_requirement_worker(
     job_id: str, project: dict, document_type: str, source: dict, actor: str,
+    llm_model: str,
 ) -> None:
     from services.requirements_documentation import generate_requirement_artifact
     with _JOBS_LOCK:
@@ -1579,7 +1580,9 @@ def _generate_requirement_worker(
                 })
             _persist_requirements_job(job_id, force=False)
 
-        artifact = generate_requirement_artifact(document_type, project, source["path"], on_token)
+        artifact = generate_requirement_artifact(
+            document_type, project, source["path"], on_token, model=llm_model,
+        )
         snapshot = _PROJECT_STORE.add_json_snapshot(
             project["id"], document_type, artifact, actor,
             {"model": artifact.get("model"), "parent_source": source["id"]}, source["id"],
@@ -1619,6 +1622,13 @@ async def generate_requirement_document(project_id: str, document_type: str, req
     source = _latest(project, "source")
     if not source:
         raise HTTPException(status_code=409, detail="Upload project source before generating requirements")
+    from services.llm import check_status
+    llm_status = check_status()
+    runtime = llm_status.get("runtime") or {}
+    llm_model = runtime.get("selected_model") or llm_status.get("active_model")
+    if not llm_status.get("available") or not llm_model:
+        raise HTTPException(status_code=503, detail="No selected LLM model is available")
+    optimization_profile = runtime.get("selected_profile") or "balanced"
     with _JOBS_LOCK:
         active = next((job for job in _REQUIREMENTS_JOBS.values()
                        if job["project_id"] == project_id and job["document_type"] == document_type
@@ -1630,6 +1640,7 @@ async def generate_requirement_document(project_id: str, document_type: str, req
             "job_id": job_id, "project_id": project_id, "document_type": document_type,
             "status": "queued", "phase": "queued", "progress": 5,
             "message": "Requirements generation queued",
+            "llm_model": llm_model, "optimization_profile": optimization_profile,
             "created_at": datetime.now(UTC).isoformat(),
             "updated_at": datetime.now(UTC).isoformat(),
         }
@@ -1637,7 +1648,8 @@ async def generate_requirement_document(project_id: str, document_type: str, req
     _persist_requirements_job(job_id)
     try:
         _JOB_EXECUTOR.submit(
-            _generate_requirement_worker, job_id, project, document_type, source, _actor(request),
+            _generate_requirement_worker, job_id, project, document_type, source,
+            _actor(request), llm_model,
         )
     except RuntimeError as exc:
         with _JOBS_LOCK:
@@ -1745,8 +1757,19 @@ async def analyze_governed_project(project_id: str, request: Request):
     if not source:
         raise HTTPException(status_code=409, detail="Project has no source snapshot")
     body = await request.json()
-    target_stack = str(body.get("target_stack") or "dotnet8_blazor")
+    configured_target = project["configuration"].get("engine_target") or project["configuration"].get("target_stack")
+    target_stack = str(body.get("target_stack") or configured_target or "").strip()
+    if not target_stack:
+        raise HTTPException(
+            status_code=400,
+            detail="Select a target technology stack before analyzing the project",
+        )
     custom_stack_desc = str(body.get("custom_stack_desc") or project["configuration"].get("custom_stack_desc") or "")
+    if target_stack == "custom" and not custom_stack_desc.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Describe the custom target technology stack before analyzing the project",
+        )
     configuration = project["configuration"]
     target_description = _analysis_target_description(configuration, body)
     from services.analyzer import analyze_project
@@ -1790,8 +1813,18 @@ async def _create_modernization_plan_locked(project_id: str, request: Request):
     if not analysis_snapshot:
         raise HTTPException(status_code=409, detail="Analyze the project before generating a plan")
     body = await request.json(); artifact = _artifact(analysis_snapshot)
-    target = str(body.get("target_stack") or analysis_snapshot["metadata"].get("target_stack") or "dotnet8_blazor")
+    target = str(body.get("target_stack") or analysis_snapshot["metadata"].get("target_stack") or "").strip()
+    if not target:
+        raise HTTPException(
+            status_code=400,
+            detail="The analysis has no target technology stack; analyze the project again with an explicit target",
+        )
     custom_desc = str(body.get("custom_stack_desc") or project["configuration"].get("custom_stack_desc") or analysis_snapshot["metadata"].get("custom_stack_desc") or "")
+    if target == "custom" and not custom_desc.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Describe the custom target technology stack before generating the plan",
+        )
 
     # POST is retry-safe for an unchanged analysis and target. Only a complete,
     # linked plan/contract pair is reusable; historical orphan plans are ignored.
@@ -2004,12 +2037,68 @@ def _transformation_target_description(custom_stack_desc: str, configuration: di
         custom_stack_desc,
         configuration.get("custom_stack_prompt"),
         configuration.get("database"),
+        target_architecture.get("stack"),
+        target_architecture.get("backend"),
+        target_architecture.get("frontend"),
+        target_architecture.get("runtime"),
         target_architecture.get("database"),
+        target_architecture.get("deployment"),
+        ", ".join(str(value) for value in (plan.get("target_technologies") or []) if value),
         database_conversion.get("target"),
     )
-    return "\n".join(
+    return "\n".join(dict.fromkeys(
         str(value).strip() for value in values if value and str(value).strip()
+    ))
+
+
+def _normalize_governed_target_stack(target_stack: str, target_description: str) -> str:
+    """Resolve engine IDs while treating reviewed human-readable stacks as custom specifications."""
+    from services.modernizer.target_config import TARGET_STACKS
+
+    requested = str(target_stack or "").strip()
+    if requested in TARGET_STACKS or requested == "custom":
+        return requested
+
+    def comparable(value: object) -> str:
+        return re.sub(r"[^a-z0-9]+", "", str(value or "").casefold())
+
+    requested_key = comparable(requested)
+    for stack_id, definition in TARGET_STACKS.items():
+        if requested_key and requested_key in {
+            comparable(stack_id),
+            comparable(definition.get("name")),
+            comparable(definition.get("backend_tech")),
+        }:
+            return stack_id
+    if requested or str(target_description or "").strip():
+        return "custom"
+    raise HTTPException(
+        status_code=409,
+        detail="The approved plan has no executable target stack. Regenerate the architecture plan with an explicit target.",
     )
+
+
+def _plan_target_metadata(project_id: str, plan_snapshot: dict) -> tuple[str, str]:
+    """Recover target metadata across revised plan snapshots created before lineage preservation."""
+    current = plan_snapshot
+    visited: set[str] = set()
+    target_stack = ""
+    custom_stack_desc = ""
+    while current and current.get("id") not in visited:
+        visited.add(str(current.get("id")))
+        metadata = current.get("metadata") or {}
+        target_stack = target_stack or str(metadata.get("target_stack") or "").strip()
+        custom_stack_desc = custom_stack_desc or str(metadata.get("custom_stack_desc") or "").strip()
+        if target_stack and (target_stack != "custom" or custom_stack_desc):
+            break
+        parent_id = current.get("parent_id")
+        if not parent_id:
+            break
+        try:
+            current = _PROJECT_STORE.get_snapshot(project_id, parent_id)
+        except KeyError:
+            break
+    return target_stack, custom_stack_desc
 
 
 @app.post("/api/projects/{project_id}/transform")
@@ -2018,12 +2107,16 @@ async def transform_governed_project(project_id: str, request: Request):
     if not plan_snapshot or plan_snapshot.get("approval_decision") != "approved":
         raise HTTPException(status_code=409, detail="An approved modernization plan is required")
     body = await request.json(); plan = _artifact(plan_snapshot, "plan.json")
+    lineage_target, lineage_custom_desc = _plan_target_metadata(project_id, plan_snapshot)
     configured_target = project["configuration"].get("engine_target") or project["configuration"].get("target_stack")
-    target_stack = str(body.get("target_stack") or configured_target or (plan.get("target_technologies") or ["dotnet8_blazor"])[0])
-    custom_stack_desc = str(body.get("custom_stack_desc") or project["configuration"].get("custom_stack_desc") or "")
+    requested_target = str(body.get("target_stack") or lineage_target or configured_target or "")
+    custom_stack_desc = str(body.get("custom_stack_desc") or lineage_custom_desc or project["configuration"].get("custom_stack_desc") or "")
     custom_stack_desc = _transformation_target_description(
         custom_stack_desc, project.get("configuration") or {}, plan,
     )
+    if requested_target and requested_target not in custom_stack_desc:
+        custom_stack_desc = f"{requested_target}\n{custom_stack_desc}".strip()
+    target_stack = _normalize_governed_target_stack(requested_target, custom_stack_desc)
     from services.build_runner import toolchain_compatibility_error
     config = project.get("configuration") or {}
     compatibility_error = toolchain_compatibility_error(" ".join(str(value or "") for value in (
@@ -2385,7 +2478,7 @@ async def export_release(project_id: str, snapshot_id: str, request: Request):
 @app.get("/api/llm/status")
 async def llm_status():
     """Check Ollama availability and return the best available code model."""
-    recommended = "devstral-small-2:24b"
+    recommended = None
     try:
         from services.llm import DEVSTRAL_MODEL, check_status
         recommended = DEVSTRAL_MODEL
@@ -2399,7 +2492,12 @@ async def update_llm_runtime(request: Request):
     """Select the deployment model/profile for subsequent generation jobs."""
     body = await request.json()
     with _JOBS_LOCK:
-        if any(_is_active_job(job) for job in _JOBS.values()):
+        generation_active = any(_is_active_job(job) for job in _JOBS.values())
+        requirements_active = any(
+            job.get("status") in {"queued", "running"}
+            for job in _REQUIREMENTS_JOBS.values()
+        )
+        if generation_active or requirements_active:
             raise HTTPException(
                 status_code=409,
                 detail="Model and optimization settings can only change while generation is idle.",

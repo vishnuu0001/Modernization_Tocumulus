@@ -4802,7 +4802,7 @@ def _pf_generate_project_files_template(
     from .build_artifacts import _default_frontend_file_list
     from .scaffolds.polyglot import generate_polyglot_project
     from .scaffolds.single_file_templates import _template_from_prompt
-    progress("generating", 25, "Generating templates (LLM offline — run: ollama pull devstral-small-2:24b)…")
+    progress("generating", 25, "Generating templates (LLM offline — select an installed runtime model)…")
     polyglot = generate_polyglot_project(lang, project_name, project_name, target)
     if polyglot:
         relative_files = []
@@ -5716,10 +5716,27 @@ def _pf_expand_generated_source_closure(
                     if value.strip()
                 ]
             basename = Path(target).name.casefold()
+            data_contract = any(
+                token in basename
+                for token in (
+                    ".dto", "-dto", "_dto", ".model", "-model", "_model",
+                    ".schema", "-schema", "_schema", ".contract", "-contract",
+                    "_contract", "interface", "types",
+                )
+            )
             type_only = bool(
                 (import_match and import_match.group("type"))
                 or "type" in basename
+                or data_contract
             )
+            runtime_names = [
+                name for name in imported_names
+                if re.search(
+                    rf"\b(?:instanceof\s+{re.escape(name)}|new\s+{re.escape(name)}\s*\(|"
+                    rf"{re.escape(name)}\s*\.)",
+                    content,
+                )
+            ]
             is_component = not type_only and any(
                 token in basename
                 for token in ("route", "context", "page", "component", "provider")
@@ -5762,13 +5779,21 @@ def _pf_expand_generated_source_closure(
                     + "\n\nTYPED VARIABLE EVIDENCE:\n"
                     + "\n".join(property_evidence)
                 )
+                runtime_rule = (
+                    "The following imports are consumed as runtime values and MUST be exported classes: "
+                    + ", ".join(runtime_names)
+                    + ". A class whose name contains Error or Exception must extend Error, preserve the "
+                    "message, set its name, and expose only source-evidenced status/code fields. "
+                    if runtime_names else
+                    "Emit only concise exported interfaces, type aliases, or enums. "
+                )
                 contract = (
-                    f"Create the missing TypeScript type-contract module imported as {specifier} "
-                    f"by {consumer_path}. Export exactly these consumed types: {required}. "
-                    "Emit only concise exported interfaces, type aliases, or enums. Do not emit React, "
-                    "JSX, components, hooks, functions, executable statements, prose, or a copy of the "
-                    "consumer. Infer the required fields and their TypeScript types from the consumer "
-                    "evidence below.\n\n" + evidence
+                    f"Create the missing non-React TypeScript data-contract module imported as {specifier} "
+                    f"by {consumer_path}. Export exactly these consumed bindings: {required}. "
+                    + runtime_rule
+                    + "Do not emit React, JSX, components, hooks, HTML, UI functions, prose, or a copy "
+                    "of the consumer. Infer the required fields and their TypeScript types only from "
+                    "the consumer evidence below.\n\n" + evidence
                 )
             elif any(token in basename for token in ("client", "service", "api")):
                 required = ", ".join(imported_names) or import_clause or "the consumed runtime API"
@@ -5846,7 +5871,12 @@ def _pf_generate_source_delta(
             file_manifest=file_manifest,
             generation_max_seconds=per_file_budget,
         )
-        return path, local[path]
+        if path in local:
+            return path, local[path]
+        migrated_path = path[:-3] + ".tsx" if path.casefold().endswith(".ts") else ""
+        if migrated_path and migrated_path in local:
+            return migrated_path, local[migrated_path]
+        raise RuntimeError(f"Closure generator did not return the requested source: {path}")
 
     progress(phase, pct, f"Generating {len(paths)} closure files with {workers} workers…")
     failures = []
@@ -5867,6 +5897,8 @@ def _pf_generate_source_delta(
         path = futures[future]
         try:
             generated_path, content = future.result()
+            if generated_path != path:
+                output.pop(path, None)
             output[generated_path] = content
         except Exception as exc:
             failures.append(f"{path}: {exc}")
@@ -7109,7 +7141,10 @@ def generate_from_prompt(
     progress("analyzing", 15, "Building generation plan…")
 
     if not explicit_manifest:
-        _record(f"{project_name}/README.md", _prompt_readme(user_prompt, target, project_name, len(images)))
+        _record(
+            f"{project_name}/README.md",
+            _prompt_readme(user_prompt, target, project_name, len(images), llm_model),
+        )
 
     # Infra scaffolding is generated deterministically, not by the LLM —
     # docker-compose.yml and Kubernetes manifests are exactly the files where
@@ -7527,7 +7562,10 @@ def _unresolved_requirement_placeholders(prompt: str) -> list[str]:
 
 
 # Function: _prompt_readme
-def _prompt_readme(user_prompt: str, target: dict, project_name: str, image_count: int) -> str:
+def _prompt_readme(
+    user_prompt: str, target: dict, project_name: str, image_count: int,
+    llm_model: str,
+) -> str:
     img_note = f"\n- User attached **{image_count} screenshot(s)** as additional context." if image_count else ""
     return textwrap.dedent(f"""\
         # {project_name} — Prompt-Driven Generation
@@ -7544,8 +7582,7 @@ def _prompt_readme(user_prompt: str, target: dict, project_name: str, image_coun
         | Database | {target["db_tech"]} |
 
         ## LLM Used
-        Model: Devstral Small 2 24B (via Ollama — runs locally on your GPU)
-        Setup: `ollama pull devstral-small-2:24b`
+        Model: `{llm_model}` (top-level runtime selection captured for this job)
 
         ## Getting Started
         Review the generated files and adjust names / namespaces as needed.
@@ -7634,7 +7671,10 @@ def _default_file_list(target: dict, project_name: str) -> list[str]:
 
 # ─── README ───────────────────────────────────────────────────────────────────
 # Function: _readme
-def _readme(analysis: dict, root_ns: str, target: dict | None = None) -> str:
+def _readme(
+    analysis: dict, root_ns: str, target: dict | None = None,
+    llm_model: str = "",
+) -> str:
     from .target_config import TARGET_STACKS
     arch  = analysis.get("architecture", {})
     techs = ", ".join(arch.get("detected_techs", []))
@@ -7663,8 +7703,7 @@ def _readme(analysis: dict, root_ns: str, target: dict | None = None) -> str:
         | Container | Docker / docker-compose |
 
         ## LLM Used for Code Generation
-        Model: Devstral Small 2 24B (via Ollama — local)
-        Recommended pull command: `ollama pull devstral-small-2:24b`
+        Model: `{llm_model or 'not captured'}` (top-level runtime selection captured for this job)
 
         ## Getting Started
         See individual service READMEs under `ModernizedApp/Services/` for setup instructions.

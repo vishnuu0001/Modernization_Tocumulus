@@ -487,7 +487,27 @@ class ProjectStore:
         plan["confirmation_status"] = "CONFIRMED" if confirmed else "PENDING_CONFIRMATION"
         plan["unresolved_requirements"] = unresolved
         plan["ready_for_approval"] = not unresolved
-        return self.add_json_snapshot(project_id, "plans", plan, user, {"revised_from": snapshot_id}, snapshot_id, "plan.json")
+        target_metadata = old.get("metadata") or {}
+        lineage = old
+        visited = set()
+        while (
+            not target_metadata.get("target_stack")
+            and lineage.get("parent_id")
+            and lineage.get("id") not in visited
+        ):
+            visited.add(lineage.get("id"))
+            lineage = self.get_snapshot(project_id, lineage["parent_id"])
+            inherited = lineage.get("metadata") or {}
+            target_metadata = {
+                **inherited,
+                **{key: value for key, value in target_metadata.items() if value not in (None, "")},
+            }
+        revision_metadata = {
+            "revised_from": snapshot_id,
+            "target_stack": target_metadata.get("target_stack"),
+            "custom_stack_desc": target_metadata.get("custom_stack_desc"),
+        }
+        return self.add_json_snapshot(project_id, "plans", plan, user, revision_metadata, snapshot_id, "plan.json")
 
     # Function: decide
     def decide(self, project_id: str, snapshot_id: str, decision: str, user: str):

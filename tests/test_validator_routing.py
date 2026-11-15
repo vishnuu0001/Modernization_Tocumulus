@@ -86,6 +86,22 @@ class ValidatorRoutingTests(unittest.TestCase):
         self.assertFalse(result.passed)
         self.assertTrue(any("contains no type declaration" in item for item in result.diagnostics))
 
+    def test_java_source_package_must_match_its_source_root_path(self):
+        path = (
+            "ModernizedApp/services/auth-service/src/main/java/"
+            "com/comshashi/auth/model/Auth.java"
+        )
+        result = validate_file(
+            path,
+            "package com.shashi.auth.model;\npublic class Auth {}\n",
+            "java",
+        )
+
+        self.assertFalse(result.passed)
+        diagnostic = " ".join(result.diagnostics)
+        self.assertIn("package com.shashi.auth.model", diagnostic)
+        self.assertIn("source path package com.comshashi.auth.model", diagnostic)
+
     # Function: test_unknown_format_never_passes_as_advisory
     def test_unknown_format_never_passes_as_advisory(self):
         result = validate_file("generated.unknown", "apparently balanced\n", "generic")

@@ -170,6 +170,37 @@ def _ollama_generate_all_sources(
             f"{project_contract}\n\n"
             f"FILE CONTRACT:\n{contract}"
         )
+        is_non_react_data_contract = contract.startswith(
+            "Create the missing non-React TypeScript data-contract module"
+        )
+        is_non_react_runtime_module = contract.startswith(
+            "Create the missing non-React TypeScript runtime module"
+        )
+        if is_non_react_data_contract:
+            prompt = (
+                f"Generate the complete production-ready contents of {rel_path}.\n"
+                "This is a non-React TypeScript data-contract file. Return only declarations required "
+                "by the file contract. JSX, HTML, React imports, hooks, components, copied consumer "
+                "source, markdown, prose, TODOs, and placeholders are forbidden. Runtime bindings must "
+                "be classes; type-only bindings must be interfaces, type aliases, or enums.\n\n"
+                f"FILE CONTRACT:\n{contract}"
+            )
+        elif is_non_react_runtime_module:
+            prompt = (
+                f"Generate the complete production-ready contents of {rel_path}.\n"
+                "This is a non-React plain TypeScript runtime/transport module. Return only "
+                "the runtime exports required by the file contract. Implement the observed "
+                "fetch/API calls with typed inputs and results, status checks, AbortSignal "
+                "support where requested, and runtime error imports as values. JSX, HTML, "
+                "React imports, hooks, components, copied consumer source, markdown, prose, "
+                "TODOs, placeholders, invented UI behavior, unobserved endpoints, and null "
+                "stub returns are forbidden. On non-success HTTP status, throw a descriptive "
+                "typed Error; return a parsed source-evidenced response, or no value only when "
+                "the declared return type is Promise<void>. Keep the module concise and bounded "
+                "(prefer under 180 lines). The .ts path is authoritative and must not be changed "
+                "to .tsx.\n\n"
+                f"FILE CONTRACT:\n{contract}"
+            )
         if (
             target.get("language", "").casefold() == "java"
             and "/src/test/" in rel_path.replace("\\", "/").casefold()
@@ -194,6 +225,16 @@ def _ollama_generate_all_sources(
                 validation_language = "javascript"
             elif suffix == ".sql":
                 validation_language = "sql"
+        normalized_path = rel_path.replace("\\", "/").casefold()
+        basename = Path(normalized_path).name
+        jsx_component_role = any(
+            token in basename
+            for token in ("page.", "component.", "context.", "provider.", "view.", "route.")
+        ) or "react component" in contract.casefold()
+        forbid_jsx = (
+            Path(rel_path).suffix.casefold() == ".ts"
+            and not jsx_component_role
+        )
         content, result, attempts = _generate_validated(
             prompt, model=model, system=system, max_tokens=_TOKENS_DEFAULT,
             num_ctx=_adaptive_num_ctx(len(prompt) + len(system), _TOKENS_DEFAULT),
@@ -201,6 +242,7 @@ def _ollama_generate_all_sources(
             dialect=sql_dialect,
             max_attempts=max_attempts,
             generation_max_seconds=(generation_max_seconds or _FILE_GENERATION_MAX_SECONDS),
+            forbid_jsx=forbid_jsx,
             on_token=getattr(on_step, "on_token", None),
             on_attempt=(
                 (lambda attempt, maximum, path=rel_path:
@@ -208,13 +250,37 @@ def _ollama_generate_all_sources(
                 if on_step else None
             ),
         )
+        committed_path = rel_path
+        if (
+            not result.passed
+            and Path(rel_path).suffix.casefold() == ".ts"
+            and any("TS17004" in str(item) for item in result.diagnostics)
+            and not forbid_jsx
+        ):
+            # The shared validator has compiler-proven that the model emitted
+            # JSX. Preserve the complete source under the correct compiler
+            # boundary rather than retaining an invalid .ts file or spending
+            # more identical repair attempts. Extensionless imports continue
+            # to resolve, and closure commit removes the original contract key
+            # atomically.
+            from services.validators import _contains_jsx, validate_file
+            if _contains_jsx(content):
+                migrated_path = rel_path[:-3] + ".tsx"
+                migrated_result = validate_file(
+                    migrated_path, content, "typescript", dialect_hint=sql_dialect,
+                )
+                if migrated_result.passed:
+                    committed_path = migrated_path
+                    result = migrated_result
         if not result.passed:
             raise RuntimeError(
                 f"Strict source validation failed for {rel_path}: "
                 + "; ".join(result.diagnostics[:5])
             )
-        files[rel_path] = content
-        generated_paths.append(rel_path)
+        if committed_path != rel_path:
+            files.pop(rel_path, None)
+        files[committed_path] = content
+        generated_paths.append(committed_path)
         if on_validation:
             on_validation(result, attempts)
 

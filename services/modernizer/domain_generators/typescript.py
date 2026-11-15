@@ -67,6 +67,9 @@ def _ui_component_prompt(
         "- Use typed props/state, function components, useEffect cleanup, useCallback/useMemo only where they prevent real work, and the sibling API module for transport.\n"
         "- Implement accessible loading, empty, error, success, validation, and pagination states supported by the source contract.\n"
         "- Keep the page concise and bounded (prefer under 350 lines): use data-driven rendering and small local view helpers instead of repeated markup, and never embed mock/demo datasets.\n"
+        "- Every const-assigned function and typed React handler must include its implementation arrow, including after a variable type annotation: `const submit: FormEventHandler<HTMLFormElement> = async (event) => {}`.\n"
+        "- Every React hook callback must also include its arrow: use `useEffect(() => {})`, `useMemo(() => value, [])`, and `useCallback(() => {}, [])`; never write `useEffect(() {})`.\n"
+        f"- Declare {domain}Page exactly once and export it exactly once; finish with `export default {domain}Page;` only when it was not already declared with `export default`. Never combine a stray closing brace with an export statement.\n"
         "- Never use Angular decorators, Vue APIs, fabricated fields, or endpoints absent from source evidence.\n"
         "Return only the complete .tsx source. No Markdown or explanatory prose."
     )
@@ -87,7 +90,10 @@ def _api_service_prompt(framework: str, domain: str, context: str, prod_rules: s
     return (
         f"{context}\n{prod_rules}{grounding}\n\n"
         f"Generate one complete TypeScript API module for the {domain} feature using native fetch, AbortSignal support, encoded URLSearchParams, and strictly typed source-evidenced contracts. "
-        "Use a relative /api base by default, report non-2xx status and response details safely, and do not invent CRUD methods absent from source evidence. Return only source code."
+        "Use a relative /api base by default, report non-2xx status and response details safely, and do not invent CRUD methods absent from source evidence. "
+        "Use either standard function declarations with block bodies or const arrow functions with an equals sign; never mix declaration syntax with an arrow token. "
+        "This is a plain .ts transport module: never emit JSX, React elements, components, hooks, or HTML; use `value as Type` rather than angle-bracket type assertions. "
+        "Return only source code."
     )
 
 

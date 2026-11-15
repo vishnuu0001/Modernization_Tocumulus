@@ -156,6 +156,137 @@ class OllamaGenerationEnforcementTests(unittest.TestCase):
         self.assertEqual("validated contract", files["Demo/src/app.ts"])
         self.assertNotIn("Demo/.strat-aqorynth/ollama-demo-provenance.json", files)
 
+    @patch("services.modernizer.validation_orchestration._generate_validated")
+    def test_compiler_proven_jsx_migrates_atomically_from_ts_to_tsx(self, generated):
+        source = "export const AuthView = () => <main>Authentication</main>;\n"
+        generated.return_value = (
+            source,
+            ValidationResult(
+                "Demo/frontend/src/components/AuthView.ts", "typescript", "compiler", False,
+                ["TS17004: JSX syntax requires a .tsx filename; plain .ts files cannot contain JSX"],
+            ),
+            3,
+        )
+        files = {"Demo/frontend/src/components/AuthView.ts": "React component contract"}
+
+        _ollama_generate_all_sources(
+            files, {"name": "React + Spring Boot", "language": "java"},
+            "Auth", "qwen-test", "system", None, None,
+        )
+
+        self.assertNotIn("Demo/frontend/src/components/AuthView.ts", files)
+        self.assertEqual(source, files["Demo/frontend/src/components/AuthView.tsx"])
+        provenance = json.loads(files["Demo/.strat-aqorynth/ollama-auth-provenance.json"])
+        self.assertIn(
+            "Demo/frontend/src/components/AuthView.tsx", provenance["source_files"],
+        )
+
+    @patch("services.modernizer.validation_orchestration._generate_validated")
+    def test_data_contract_uses_compact_non_react_generation_prompt(self, generated):
+        generated.return_value = (
+            "export class ErrorResponseDto extends Error {}\n",
+            ValidationResult("Demo/dto/Error.dto.ts", "typescript", "compiler", True, []),
+            1,
+        )
+        contract = (
+            "Create the missing non-React TypeScript data-contract module imported as "
+            "./Error.dto. Export exactly these consumed bindings: ErrorResponseDto."
+        )
+        files = {"Demo/dto/Error.dto.ts": contract}
+
+        _ollama_generate_all_sources(
+            files, {"name": "React + Spring Boot", "language": "java"},
+            "Auth", "qwen-test", "system", None, None,
+            user_request="Render a large React authentication page with JSX",
+            file_manifest="many unrelated project files",
+        )
+
+        prompt = generated.call_args.args[0]
+        self.assertIn("non-React TypeScript data-contract file", prompt)
+        self.assertIn("ErrorResponseDto", prompt)
+        self.assertNotIn("ORIGINAL USER REQUIREMENTS", prompt)
+        self.assertNotIn("large React authentication page", prompt)
+
+    @patch("services.modernizer.validation_orchestration._generate_validated")
+    def test_api_closure_uses_compact_non_react_prompt_and_forbids_jsx(self, generated):
+        generated.return_value = (
+            "export async function login(): Promise<string> { return 'token'; }\n",
+            ValidationResult("Demo/frontend/src/api/auth.api.ts", "typescript", "compiler", True, []),
+            1,
+        )
+        contract = (
+            "Create the missing non-React TypeScript runtime module imported as ./auth.api "
+            "by Demo/frontend/src/AuthPage.tsx. Export exactly these consumed runtime bindings: "
+            "login. Implement a concise fetch-based API client."
+        )
+        files = {"Demo/frontend/src/api/auth.api.ts": contract}
+
+        _ollama_generate_all_sources(
+            files, {"name": "React + Spring Boot", "language": "java"},
+            "Auth", "qwen-test", "system", None, None,
+            user_request="Render a large React authentication page with JSX",
+            file_manifest="many unrelated project files",
+        )
+
+        prompt = generated.call_args.args[0]
+        self.assertIn("non-React plain TypeScript runtime/transport module", prompt)
+        self.assertIn("auth.api", prompt)
+        self.assertIn("prefer under 180 lines", prompt)
+        self.assertIn("null stub returns are forbidden", prompt)
+        self.assertNotIn("ORIGINAL USER REQUIREMENTS", prompt)
+        self.assertNotIn("large React authentication page", prompt)
+        self.assertTrue(generated.call_args.kwargs["forbid_jsx"])
+
+    @patch("services.modernizer.validation_orchestration._generate_validated")
+    def test_api_closure_never_masks_jsx_failure_by_migrating_to_tsx(self, generated):
+        contract = (
+            "Create the missing non-React TypeScript runtime module imported as ./auth.api "
+            "by Demo/frontend/src/AuthPage.tsx. Export exactly these consumed runtime bindings: login."
+        )
+        generated.return_value = (
+            "export const login = () => <main>Login</main>;\n",
+            ValidationResult(
+                "Demo/frontend/src/api/auth.api.ts", "typescript", "compiler", False,
+                ["TS17004: JSX syntax requires a .tsx filename; plain .ts files cannot contain JSX"],
+            ),
+            3,
+        )
+        files = {"Demo/frontend/src/api/auth.api.ts": contract}
+
+        with self.assertRaisesRegex(RuntimeError, "TS17004"):
+            _ollama_generate_all_sources(
+                files, {"name": "React + Spring Boot", "language": "java"},
+                "Auth", "qwen-test", "system", None, None,
+            )
+
+        self.assertEqual(contract, files["Demo/frontend/src/api/auth.api.ts"])
+        self.assertNotIn("Demo/frontend/src/api/auth.api.tsx", files)
+
+    @patch("services.modernizer.validation_orchestration._generate_validated")
+    def test_data_contract_never_masks_jsx_failure_by_migrating_to_tsx(self, generated):
+        contract = (
+            "Create the missing non-React TypeScript data-contract module imported as "
+            "./Error.dto. Export exactly these consumed bindings: ErrorResponseDto."
+        )
+        generated.return_value = (
+            "export const ErrorResponseDto = () => <main>Error</main>;\n",
+            ValidationResult(
+                "Demo/frontend/src/dto/Error.dto.ts", "typescript", "compiler", False,
+                ["TS17004: JSX syntax requires a .tsx filename; plain .ts files cannot contain JSX"],
+            ),
+            3,
+        )
+        files = {"Demo/frontend/src/dto/Error.dto.ts": contract}
+
+        with self.assertRaisesRegex(RuntimeError, "TS17004"):
+            _ollama_generate_all_sources(
+                files, {"name": "React + Spring Boot", "language": "java"},
+                "Auth", "qwen-test", "system", None, None,
+            )
+
+        self.assertEqual(contract, files["Demo/frontend/src/dto/Error.dto.ts"])
+        self.assertNotIn("Demo/frontend/src/dto/Error.dto.tsx", files)
+
     # Function: test_domain_generation_fails_closed_when_ollama_is_unavailable
     @patch("services.llm.check_status", return_value={"available": False})
     def test_domain_generation_fails_closed_when_ollama_is_unavailable(self, _status):

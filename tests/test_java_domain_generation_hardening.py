@@ -194,6 +194,38 @@ class JavaDomainGenerationConvergenceTests(unittest.TestCase):
         self.assertEqual(attempts, 3)
         self.assertFalse(result.passed)
 
+    @patch("services.llm.generate")
+    def test_java_file_identity_mismatch_gets_fresh_retry_and_no_early_convergence(self, generate):
+        wrong = (
+            "package com.shashi.auth.model;\n"
+            "public class History {}\n"
+        )
+        correct = (
+            "package com.comshashi.auth.model;\n"
+            "public class Auth {}\n"
+        )
+        generate.side_effect = [wrong, wrong, correct]
+        path = (
+            "ModernizedApp/services/auth-service/src/main/java/"
+            "com/comshashi/auth/model/Auth.java"
+        )
+
+        content, result, attempts = _generate_validated(
+            "Generate the Auth JPA entity", model="qwen3.5:9b", system="java",
+            max_tokens=2048, num_ctx=4096, rel_path=path, language="java",
+            max_attempts=3,
+        )
+
+        self.assertTrue(result.passed, result.diagnostics)
+        self.assertEqual(3, attempts)
+        self.assertEqual(correct, content)
+        for call in generate.call_args_list[1:]:
+            repair_prompt = call.args[0]
+            self.assertIn("AUTHORITATIVE JAVA FILE IDENTITY", repair_prompt)
+            self.assertIn("package com.comshashi.auth.model;", repair_prompt)
+            self.assertIn("top-level type must be named Auth", repair_prompt)
+            self.assertNotIn(wrong.strip(), repair_prompt)
+
     def test_csharp_stops_when_diagnostics_do_not_semantically_change(self):
         # The convergence guard also applies to the other compiler-backed
         # languages used by the domain generators. Repeating the same C#
@@ -241,13 +273,28 @@ class JavaDomainGeneratorTimeBudgetTests(unittest.TestCase):
     so the very first attempt — before any repair round started — already
     exceeded the whole aggregate budget on every domain, every time."""
 
+    def test_framework_entity_prompts_preserve_exact_filename_type(self):
+        from services.modernizer.domain_generators.java import (
+            _java_entity_prompt_micronaut,
+            _java_entity_prompt_quarkus,
+        )
+
+        for builder in (_java_entity_prompt_quarkus, _java_entity_prompt_micronaut):
+            with self.subTest(builder=builder.__name__):
+                prompt = builder("Customers", "acme", ["CUSTOMERS"], "ctx", "", "", "")
+                self.assertIn("class Customers", prompt)
+                self.assertIn("CustomersCreateRequest", prompt)
+                self.assertNotIn("class Customer with", prompt)
+
     def test_all_java_domain_calls_pass_the_java_aggregate_time_budget(self):
         from services.modernizer._shared import _JAVA_FILE_GENERATION_MAX_SECONDS
         from services.modernizer.domain_generators.java import _llm_domain_java
 
         captured_kwargs = []
+        captured_prompts = []
 
         def fake_generate_validated(prompt, **kwargs):
+            captured_prompts.append(prompt)
             captured_kwargs.append(kwargs)
             return "// generated\nclass Foo {}", ValidationResult(
                 kwargs.get("rel_path", "Foo.java"), "java", "compiler", True, [],
@@ -269,6 +316,54 @@ class JavaDomainGeneratorTimeBudgetTests(unittest.TestCase):
         self.assertEqual(len(captured_kwargs), 2)  # Controller and Entity+DTO
         for kwargs in captured_kwargs:
             self.assertEqual(kwargs.get("generation_max_seconds"), _JAVA_FILE_GENERATION_MAX_SECONDS)
+        self.assertIn("public top-level type `OrderController`", captured_prompts[0])
+        self.assertIn("package com.acme.order.controller;", captured_prompts[0])
+        self.assertIn("public top-level type `Order`", captured_prompts[1])
+        self.assertIn("package com.acme.order.model;", captured_prompts[1])
+
+    def test_failed_entity_is_not_committed_to_domain_output(self):
+        from services.modernizer.domain_generators.java import _llm_domain_java
+
+        controller_path = (
+            "ModernizedApp/services/auth-service/src/main/java/"
+            "com/acme/auth/controller/AuthController.java"
+        )
+        entity_path = (
+            "ModernizedApp/services/auth-service/src/main/java/"
+            "com/acme/auth/model/Auth.java"
+        )
+        results = [
+            (
+                "package com.acme.auth.controller; public class AuthController {}\n",
+                ValidationResult(controller_path, "java", "compiler", True, []),
+                1,
+            ),
+            (
+                "package com.legacy.auth.model; public class History {}\n",
+                ValidationResult(
+                    entity_path, "java", "compiler", False,
+                    ["Java source Auth.java must declare its filename-matching type Auth"],
+                ),
+                3,
+            ),
+        ]
+        files = {}
+
+        with patch(
+            "services.modernizer.validation_orchestration._generate_validated",
+            side_effect=results,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "Java entity generation failed for Auth"):
+                _llm_domain_java(
+                    files=files, domain="Auth", root_ns="acme", domain_tables=["AUTH"],
+                    antipatterns=[], context="ctx", prod_rules="", source_sec="", guide_sec="",
+                    model="qwen3.5:9b", system="sys", tables=["AUTH"],
+                    target={"backend_tech": "Spring Boot 3", "db_target": "postgres"},
+                    on_step=None, generate=lambda *args, **kwargs: "",
+                )
+
+        self.assertIn(controller_path, files)
+        self.assertNotIn(entity_path, files)
 
 
 class AllLanguageGenerationTimeBudgetTests(unittest.TestCase):

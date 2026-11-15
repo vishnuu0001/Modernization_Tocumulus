@@ -75,7 +75,7 @@ export default function AnalysisPage() {
   useEffect(() => {
     getLlmStatus()
       .then(setLlmStatus)
-      .catch(() => setLlmStatus({ available: false, recommended: 'devstral-small-2:24b' }))
+      .catch(() => setLlmStatus({ available: false }))
   }, [])
 
   useEffect(() => () => {

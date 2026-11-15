@@ -7,6 +7,11 @@ from fastapi import HTTPException
 from api import server
 
 
+class _RuntimeRequest:
+    async def json(self):
+        return {"model": "qwen3.5:9b", "profile": "performance"}
+
+
 def test_persisted_running_requirement_job_becomes_explicit_restart_failure(tmp_path, monkeypatch):
     original = dict(server._REQUIREMENTS_JOBS)
     server._REQUIREMENTS_JOBS.clear()
@@ -59,3 +64,23 @@ def test_requirement_job_endpoint_still_returns_404_when_no_checkpoint_exists(tm
     finally:
         server._REQUIREMENTS_JOBS.clear()
         server._REQUIREMENTS_JOBS.update(original)
+
+
+def test_runtime_selection_cannot_change_during_requirements_generation():
+    original_requirements = dict(server._REQUIREMENTS_JOBS)
+    original_jobs = dict(server._JOBS)
+    server._REQUIREMENTS_JOBS.clear()
+    server._JOBS.clear()
+    server._REQUIREMENTS_JOBS["req-active"] = {
+        "job_id": "req-active", "status": "running", "project_id": "APP-005",
+        "document_type": "knowledge_graph",
+    }
+    try:
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(server.update_llm_runtime(_RuntimeRequest()))
+        assert exc.value.status_code == 409
+    finally:
+        server._REQUIREMENTS_JOBS.clear()
+        server._REQUIREMENTS_JOBS.update(original_requirements)
+        server._JOBS.clear()
+        server._JOBS.update(original_jobs)

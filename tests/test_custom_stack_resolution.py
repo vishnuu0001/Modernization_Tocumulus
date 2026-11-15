@@ -219,7 +219,7 @@ class CustomStackResolutionTests(unittest.TestCase):
         self.assertEqual(".NET 9", result["backend"])
 
     def test_reviewed_plan_sql_server_choice_reaches_transformation_target(self):
-        from api.server import _transformation_target_description
+        from api.server import _normalize_governed_target_stack, _transformation_target_description
 
         description = _transformation_target_description(
             "Custom stack prompt: Java 21, React, SQL as DB",
@@ -235,6 +235,37 @@ class CustomStackResolutionTests(unittest.TestCase):
 
         self.assertEqual("mssql", target["db_target"])
         self.assertFalse(target["database_target_required"])
+
+        reviewed_plan = {
+            "target_architecture": {
+                "stack": "Java 21 with Spring Boot 3, React 19, and PostgreSQL 17",
+                "deployment": "Kubernetes",
+            },
+            "target_technologies": [
+                "Java 21 with Spring Boot 3", "React 19", "PostgreSQL 17",
+            ],
+        }
+        reviewed_description = _transformation_target_description("", {}, reviewed_plan)
+        self.assertIn("Java 21 with Spring Boot 3", reviewed_description)
+        self.assertEqual(
+            "custom",
+            _normalize_governed_target_stack(
+                "Java 21 with Spring Boot 3", reviewed_description,
+            ),
+        )
+
+    def test_governed_target_normalizes_catalog_names_and_fails_when_empty(self):
+        from fastapi import HTTPException
+        from api.server import _normalize_governed_target_stack
+
+        self.assertEqual(
+            "spring_boot",
+            _normalize_governed_target_stack(
+                "Java 21 Spring Boot 3 + PostgreSQL", "",
+            ),
+        )
+        with self.assertRaises(HTTPException):
+            _normalize_governed_target_stack("", "")
 
     def test_dotnet_companion_version_alignment_covers_supported_majors(self):
         for major in (8, 9, 10):

@@ -43,6 +43,68 @@ from services.validators import ValidationResult
 
 
 class RunBoundedRoundTests(unittest.TestCase):
+    def test_per_file_java_repair_replaces_policy_forbidden_broad_catch(self):
+        from services.modernizer.build_artifacts import (
+            _apply_deterministic_java_diagnostic_repairs,
+        )
+
+        path = "ModernizedApp/services/auth-service/src/main/java/AuthController.java"
+        output = {
+            path: (
+                "public class AuthController {\n"
+                "  void authenticate() {\n"
+                "    try { verify(); } catch (Exception error) { throw error; }\n"
+                "    try { verify(); } catch (final java.lang.Throwable failure) { throw failure; }\n"
+                "    try { verify(); } catch (Exception | com.example.AuthFailure problem) { throw problem; }\n"
+                "  }\n"
+                "  void verify() {}\n"
+                "}\n"
+            )
+        }
+        changed = _apply_deterministic_java_diagnostic_repairs(
+            output,
+            {
+                path: [
+                    "Broad Exception/Throwable catches are forbidden in Spring web code; "
+                    "use typed exceptions and centralized handling"
+                ]
+            },
+        )
+
+        self.assertEqual({path}, changed)
+        self.assertIn("catch (RuntimeException error)", output[path])
+        self.assertIn("catch (final RuntimeException failure)", output[path])
+        self.assertIn("catch (com.example.AuthFailure problem)", output[path])
+        self.assertNotIn("catch (Exception error)", output[path])
+
+    @patch("services.llm.generate")
+    def test_generate_validated_repairs_broad_java_catch_without_model_retry(self, generate):
+        generate.return_value = (
+            "@RestController\n"
+            "public class AuthController {\n"
+            "  void authenticate() {\n"
+            "    try { verify(); } catch (Exception error) { throw error; }\n"
+            "  }\n"
+            "  void verify() {}\n"
+            "}\n"
+        )
+
+        content, result, attempts = _generate_validated(
+            "Generate an authentication controller",
+            model="test-model",
+            system="java",
+            max_tokens=2048,
+            num_ctx=4096,
+            rel_path="AuthController.java",
+            language="java",
+            max_attempts=3,
+        )
+
+        self.assertTrue(result.passed, result.diagnostics)
+        self.assertEqual(1, attempts)
+        self.assertIn("catch (RuntimeException error)", content)
+        generate.assert_called_once()
+
     # Function: test_hung_future_does_not_block_the_round
     def test_hung_future_does_not_block_the_round(self):
         from concurrent.futures import ThreadPoolExecutor

@@ -6,7 +6,7 @@
 import { useContext, useEffect, useMemo, useRef, useState } from 'react'
 import toast from 'react-hot-toast'
 import { Archive, CheckCircle2, ChevronRight, ClipboardList, Code2, Download, FileDiff, FolderKanban, FolderOpen, Home, MessageSquareText, Play, RotateCcw, ScanSearch, ShieldCheck, Trash2, Upload, X, XCircle } from 'lucide-react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import Layout from '../components/Layout.jsx'
 import { AppContext } from '../App.jsx'
 import {
@@ -112,6 +112,7 @@ function ValidationResults({ value }) {
 // Function: ProjectsPage
 export default function ProjectsPage() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const { authUser } = useContext(AppContext)
   const [projects, setProjects] = useState([]); const [selected, setSelected] = useState(null)
   const [tab, setTab] = useState('Overview'); const [busy, setBusy] = useState(false)
@@ -141,7 +142,8 @@ export default function ProjectsPage() {
   // Function: refresh
   const refresh = async (id, preserveTab = true) => {
     const result = await listProjects(); setProjects(result.projects || [])
-    if (id || selected?.id) { const project = await getProject(id || selected.id); setSelected(project); if (!preserveTab) setTab('Overview'); return project }
+    const requestedId = id || selected?.id
+    if (requestedId && (result.projects || []).some(project => project.id === requestedId)) { const project = await getProject(requestedId); setSelected(project); if (!preserveTab) setTab('Overview'); return project }
   }
   // Function: removeProject
   const removeProject = async (project) => {
@@ -161,7 +163,7 @@ export default function ProjectsPage() {
       setDeletingProject('')
     }
   }
-  useEffect(() => { refresh().catch(() => toast.error('Could not load governed projects')); getTargetStacks().then(data => setStacks([...(data.stacks || []), { id: 'custom', engine_target: 'custom', name: 'Define my own technology stack', category: 'Custom', native: false }])).catch(() => {}); getToolchainStatus().then(setToolchains).catch(() => {}) }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { refresh(searchParams.get('project') || undefined, false).catch(() => toast.error('Could not load governed projects')); getTargetStacks().then(data => setStacks([...(data.stacks || []), { id: 'custom', engine_target: 'custom', name: 'Define my own technology stack', category: 'Custom', native: false }])).catch(() => {}); getToolchainStatus().then(setToolchains).catch(() => {}) }, []) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!selected?.id) { setActiveJob(null); return undefined }
     let cancelled = false

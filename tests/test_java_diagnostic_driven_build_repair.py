@@ -7,6 +7,7 @@ from services.modernizer.build_artifacts import (
     _apply_deterministic_java_diagnostic_repairs,
     _java_lexical_tail_state,
     _reconcile_java_logger_api_from_diagnostics,
+    _reconcile_java_entity_update_copy_contracts,
     _reconcile_java_missing_well_known_imports_from_diagnostics,
     _reconcile_java_private_access_from_diagnostics,
     _reconcile_java_static_invocations_from_diagnostics,
@@ -20,6 +21,56 @@ from services.modernizer.prompt_pipeline import (
     _pf_repair_build_round,
     _pf_run_build_and_repair,
 )
+
+
+class JavaEntityUpdateContractTests(unittest.TestCase):
+    def test_generic_name_update_is_replaced_with_source_grounded_entity_fields(self):
+        entity_path = (
+            "ModernizedApp/backend/shashi-service/src/main/java/"
+            "com/comshashi/shashi/model/Shashi.java"
+        )
+        service_path = (
+            "ModernizedApp/backend/shashi-service/src/main/java/"
+            "com/comshashi/shashi/service/ShashiServiceImpl.java"
+        )
+        output = {
+            entity_path: (
+                "package com.comshashi.shashi.model;\n"
+                "@jakarta.persistence.Entity\n"
+                "public class Shashi {\n"
+                "  private Long id;\n"
+                "  private String transId;\n"
+                "  private String mailId;\n"
+                "  private Integer seats;\n"
+                "  private Boolean isActive = true;\n"
+                "  private java.time.Instant createdAt;\n"
+                "}\n"
+            ),
+            service_path: (
+                "package com.comshashi.shashi.service;\n"
+                "import com.comshashi.shashi.model.Shashi;\n"
+                "class ShashiServiceImpl {\n"
+                "  Shashi update(Long id, Shashi updated) {\n"
+                "    java.util.Optional<Shashi> existing = repository.findById(id);\n"
+                "    existing.get().setName(updated.getName());\n"
+                "    existing.get().setIsActive(updated.getIsActive());\n"
+                "    return repository.save(existing.get());\n"
+                "  }\n"
+                "}\n"
+            ),
+        }
+
+        _reconcile_java_entity_update_copy_contracts(output)
+
+        repaired = output[service_path]
+        self.assertNotIn("setName", repaired)
+        self.assertNotIn("getName", repaired)
+        self.assertIn("setTransId(updated.getTransId())", repaired)
+        self.assertIn("setMailId(updated.getMailId())", repaired)
+        self.assertIn("setSeats(updated.getSeats())", repaired)
+        self.assertEqual(1, repaired.count("setIsActive(updated.getIsActive())"))
+        self.assertNotIn("setId", repaired)
+        self.assertNotIn("setCreatedAt", repaired)
 
 
 class JavaPrivateAccessDiagnosticRepairTests(unittest.TestCase):

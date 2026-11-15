@@ -2152,6 +2152,7 @@ def _reconcile_java_generation_output(
     _migrate_java_record_builder_chains(output)
     _migrate_java_record_getter_calls(output)
     _reconcile_java_entity_read_accessors(output)
+    _reconcile_java_entity_update_copy_contracts(output)
     _reconcile_java_entity_mutators(output)
     _reconcile_java_entity_constructors(output)
     _reconcile_java_bean_compatibility_constructors(output)
@@ -4728,6 +4729,115 @@ def _reconcile_java_entity_mutators(output: dict[str, str]) -> None:
         output[entity_path] = entity
 
 
+def _reconcile_java_entity_update_copy_contracts(output: dict[str, str]) -> None:
+    """Align generated full-update services with their entity's real fields.
+
+    Domain files are generated independently. A generic service frequently
+    emits ``target.setName(updated.getName())`` even after source grounding
+    replaces the placeholder ``name`` field with real legacy fields. Remove
+    those fabricated accessor pairs and copy every real mutable business field
+    for the same PUT-style update method. The subsequent entity-mutator pass
+    materializes any accessors not supplied by Lombok.
+    """
+    entities: dict[tuple[str, str], dict[str, str]] = {}
+    for path, content in output.items():
+        if (
+            not path.casefold().endswith(".java")
+            or not re.search(r"@(?:jakarta\.persistence\.)?Entity\b", str(content))
+        ):
+            continue
+        declared = re.search(r"\bclass\s+([A-Za-z_$][\w$]*)\b", content)
+        if not declared:
+            continue
+        fields = {
+            name: field_type
+            for field_type, name in re.findall(
+                r"(?m)^\s*private\s+(?!static\b)([A-Za-z_$][\w$<>?,.\[\]]*)\s+"
+                r"([A-Za-z_$][\w$]*)\s*(?:=[^;]*)?;",
+                content,
+            )
+        }
+        if fields:
+            entities[(_java_source_module(path), declared.group(1))] = fields
+
+    copy_pattern_template = (
+        r"(?m)^(?P<indent>[ \t]*)(?P<target>[A-Za-z_$][\w$]*"
+        r"(?:\.[A-Za-z_$][\w$]*\([^;()]*\))*)\.set(?P<property>[A-Z][A-Za-z0-9_$]*)"
+        r"\(\s*{source}\.(?:get|is)(?P=property)\(\)\s*\)\s*;[ \t]*(?:\r?\n)?"
+    )
+    excluded = {"id", "createdAt", "updatedAt", "version"}
+    for path, content in list(output.items()):
+        if not path.casefold().endswith("serviceimpl.java") or not isinstance(content, str):
+            continue
+        module = _java_source_module(path)
+        replacements: list[tuple[int, int, str]] = []
+        for start, end in _java_top_level_method_spans(content):
+            segment = content[start:end]
+            # Method spans deliberately begin at the opening brace, so bind
+            # the update parameter from the immediately preceding signature.
+            signature_prefix = content[max(0, start - 1000):start + 1]
+            matched_entity = None
+            source_name = ""
+            for (owner, entity_name), fields in entities.items():
+                if owner != module:
+                    continue
+                signatures = list(re.finditer(
+                    rf"\b{re.escape(entity_name)}\s+update\s*\([^)]*\b"
+                    rf"{re.escape(entity_name)}\s+([A-Za-z_$][\w$]*)\s*\)\s*\{{",
+                    signature_prefix,
+                ))
+                if signatures:
+                    matched_entity = (entity_name, fields)
+                    source_name = signatures[-1].group(1)
+                    break
+            if not matched_entity:
+                continue
+            _entity_name, fields = matched_entity
+            copy_pattern = re.compile(
+                copy_pattern_template.format(source=re.escape(source_name)),
+            )
+            copies = list(copy_pattern.finditer(segment))
+            if not copies:
+                continue
+            target = copies[0].group("target")
+            indent = copies[0].group("indent")
+            field_by_cap = {
+                field[0].upper() + field[1:]: field for field in fields
+            }
+            retained_fields: set[str] = set()
+
+            def retain_real_copy(match: re.Match) -> str:
+                field = field_by_cap.get(match.group("property"))
+                if not field:
+                    return ""
+                retained_fields.add(field)
+                return match.group(0)
+
+            repaired = copy_pattern.sub(retain_real_copy, segment)
+            missing_lines = []
+            for field, field_type in fields.items():
+                if field in excluded or field in retained_fields:
+                    continue
+                cap = field[0].upper() + field[1:]
+                getter = f"is{cap}" if field_type == "boolean" else f"get{cap}"
+                missing_lines.append(
+                    f"{indent}{target}.set{cap}({source_name}.{getter}());"
+                )
+            if missing_lines:
+                return_match = re.search(r"(?m)^[ \t]*return\s+[^;]+;", repaired)
+                if return_match:
+                    repaired = (
+                        repaired[:return_match.start()]
+                        + "\n".join(missing_lines) + "\n"
+                        + repaired[return_match.start():]
+                    )
+            if repaired != segment:
+                replacements.append((start, end, repaired))
+        for start, end, repaired in reversed(replacements):
+            content = content[:start] + repaired + content[end:]
+        output[path] = content
+
+
 def _reconcile_java_entity_constructors(output: dict[str, str]) -> None:
     """Add typed compatibility constructors only for observed entity calls."""
     all_java = "\n".join(
@@ -5864,6 +5974,36 @@ def _apply_deterministic_java_diagnostic_repairs(
     changed |= _reconcile_java_static_invocations_from_diagnostics(output, errors_by_file)
     changed |= _remove_java_invalid_type_imports_from_diagnostics(output, errors_by_file)
     changed |= _reconcile_java_logger_api_from_diagnostics(output, errors_by_file)
+    for path, diagnostics in errors_by_file.items():
+        content = output.get(path)
+        if not isinstance(content, str) or not any(
+            "Broad Exception/Throwable catches are forbidden" in str(item)
+            for item in diagnostics
+        ):
+            continue
+        def narrow_broad_catch(match: re.Match) -> str:
+            alternatives = [item.strip() for item in match.group("types").split("|")]
+            typed = [
+                item for item in alternatives
+                if item not in {
+                    "Exception", "Throwable", "java.lang.Exception", "java.lang.Throwable",
+                }
+            ]
+            replacement_types = " | ".join(typed) if typed else "RuntimeException"
+            modifier = match.group("modifier") or ""
+            return f"catch ({modifier}{replacement_types} {match.group('name')})"
+
+        repaired = re.sub(
+            r"\bcatch\s*\(\s*(?P<modifier>final\s+)?"
+            r"(?P<types>(?:[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*"
+            r"(?:\s*\|\s*)?)+)"
+            r"\s+(?P<name>[A-Za-z_$][\w$]*)\s*\)",
+            narrow_broad_catch,
+            content,
+        )
+        if repaired != content:
+            output[path] = repaired
+            changed.add(path)
     return changed
 
 

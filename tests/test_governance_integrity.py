@@ -185,6 +185,37 @@ Integrations:
         self.assertEqual([], confirmed["unresolved_requirements"])
         self.assertTrue(all(item["status"] == "CONFIRMED" for item in confirmed["proposed_decisions"]))
 
+    def test_plan_revisions_preserve_executable_target_metadata_across_lineage(self):
+        plan = generate_plan(
+            {"project_type": "legacy", "requested_target": {}},
+            {"hierarchy": {"modules": {"trains": {}}}},
+            "Java 21 with Spring Boot 3 and React 19",
+        )
+        custom_description = "Java 21 with Spring Boot 3, React 19, and PostgreSQL 17"
+        with tempfile.TemporaryDirectory() as directory:
+            store = ProjectStore(Path(directory) / "projects")
+            project = store.create_prompt_project(
+                "Target lineage test", "Modernize the train system", "admin@example.test",
+            )
+            original = store.add_json_snapshot(
+                project["id"], "plans", plan, "admin@example.test",
+                {"target_stack": "custom", "custom_stack_desc": custom_description},
+                filename="plan.json",
+            )
+            first_revision = store.update_plan(
+                project["id"], original["id"], {"decisions_confirmed": True},
+                "admin@example.test",
+            )
+            second_revision = store.update_plan(
+                project["id"], first_revision["id"], {"deployment_approach": "Kubernetes"},
+                "admin@example.test",
+            )
+
+        self.assertEqual("custom", first_revision["metadata"]["target_stack"])
+        self.assertEqual(custom_description, first_revision["metadata"]["custom_stack_desc"])
+        self.assertEqual("custom", second_revision["metadata"]["target_stack"])
+        self.assertEqual(custom_description, second_revision["metadata"]["custom_stack_desc"])
+
     # Function: test_contract_validator_never_claims_unperformed_alignment
     def test_contract_validator_never_claims_unperformed_alignment(self):
         result = validate_contracts({

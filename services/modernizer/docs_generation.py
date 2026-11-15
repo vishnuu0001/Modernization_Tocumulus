@@ -48,7 +48,7 @@ def _gmd_check_llm() -> tuple:
         from services.llm import check_status, pick_codegen_model
         info = check_status()
         llm_ok = info.get("available", False)
-        model = pick_codegen_model() or ""  # fast VRAM-resident model, not the forced status default
+        model = pick_codegen_model() or ""  # authoritative top-level runtime selection
         # Docs are prose, not source in any one profiled language — the
         # stack-neutral core alone (no language/framework/datastore profile)
         # is the right fit here.

@@ -7,8 +7,9 @@ import { Activity, AlertTriangle, Boxes, Braces, Check, CheckCircle2, ChevronRig
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import Layout from '../components/Layout.jsx'
 import {
-  createProject, downloadGeneratedAssets, downloadRequirementDocument, filterUploadFiles, generateRequirementDocument,
-  getGeneratedAssets, getProject, getRequirementDocument, getRequirementGenerationJob, getSnapshotArtifact, listProjects, uploadFolder,
+  analyzeProject, createProject, downloadGeneratedAssets, downloadRequirementDocument, filterUploadFiles,
+  generateProjectPlan, generateRequirementDocument, getGeneratedAssets, getProject, getRequirementDocument,
+  getRequirementGenerationJob, getSnapshotArtifact, getTargetStacks, listProjects, uploadFolder,
 } from '../api/client.js'
 
 const fieldClass = 'w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-blue-400 focus:ring-4 focus:ring-blue-500/10'
@@ -253,6 +254,7 @@ function useProjectArtifact(kind) {
   const [project, setProject] = useState(null)
   const [artifact, setArtifact] = useState(null)
   const [loading, setLoading] = useState(false)
+  const [refreshToken, setRefreshToken] = useState(0)
   useEffect(() => { listProjects().then(result => { const values = result.projects || []; const requested = searchParams.get('project'); setProjects(values); setProjectId(current => current || (values.some(item => item.id === requested) ? requested : values[0]?.id || '')) }).catch(() => toast.error('Could not load projects')) }, []) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     setProject(null); setArtifact(null)
@@ -263,9 +265,10 @@ function useProjectArtifact(kind) {
       const snapshot = (value.snapshots || []).find(item => item.kind === kind)
       if (snapshot) setArtifact((await getSnapshotArtifact(projectId, snapshot.id)).artifact)
     }).catch(() => {}).finally(() => setLoading(false))
-  }, [projectId, kind])
+  }, [projectId, kind, refreshToken])
   const selectProject = value => { setProjectId(value); setSearchParams(value ? { project: value } : {}) }
-  return { projects, projectId, project, artifact, loading, selectProject }
+  const refresh = () => setRefreshToken(value => value + 1)
+  return { projects, projectId, project, artifact, loading, selectProject, refresh }
 }
 
 function RequirementsProjectPicker({ projects, projectId, onChange }) {
@@ -288,7 +291,37 @@ function ProjectIdentityBanner({ identity, project }) {
 
 function TargetArchitectureReview() {
   const navigate = useNavigate()
-  const { projects, projectId, project, artifact: plan, loading, selectProject } = useProjectArtifact('plans')
+  const { projects, projectId, project, artifact: plan, loading, selectProject, refresh } = useProjectArtifact('plans')
+  const [stacks, setStacks] = useState([])
+  const [targetStack, setTargetStack] = useState('')
+  const [customStackDescription, setCustomStackDescription] = useState('')
+  const [generating, setGenerating] = useState(false)
+  useEffect(() => {
+    getTargetStacks().then(result => setStacks([...(result.stacks || []).filter(stack => stack.id !== 'custom'), { id: 'custom', name: 'Custom technology stack' }])).catch(() => toast.error('Could not load target technology stacks'))
+  }, [])
+  useEffect(() => {
+    const configured = project?.configuration?.engine_target || project?.configuration?.target_stack
+    if (configured && stacks.some(stack => stack.id === configured)) setTargetStack(configured)
+  }, [project, stacks])
+  const generateArchitecture = async () => {
+    if (!projectId || !targetStack) return
+    const customDescription = customStackDescription.trim()
+    if (targetStack === 'custom' && !customDescription) {
+      toast.error('Describe the custom target technology stack')
+      return
+    }
+    setGenerating(true)
+    try {
+      await analyzeProject(projectId, targetStack, customDescription)
+      await generateProjectPlan(projectId, targetStack, customDescription)
+      toast.success('Target architecture generated')
+      refresh()
+    } catch (error) {
+      toast.error(error?.response?.data?.detail || 'Could not generate target architecture')
+    } finally {
+      setGenerating(false)
+    }
+  }
   const architecture = plan?.target_architecture || {}
   const domains = (plan?.modules_and_domains || []).slice(0, 8)
   const services = (domains.length ? domains : ['Application']).slice(0, 4)
@@ -304,21 +337,22 @@ function TargetArchitectureReview() {
 
   return <PageFrame title="Target Architecture Review" description="Review the generated target topology, domain boundaries, technology choices, and engineering principles before forward engineering begins." step={4}>
     <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-[0_12px_35px_rgba(15,23,42,0.06)]"><RequirementsProjectPicker projects={projects} projectId={projectId} onChange={selectProject} /><div className="mt-4"><ProjectIdentityBanner project={project} /></div></section>
-    {loading ? <div className="flex min-h-72 items-center justify-center"><LoaderCircle className="h-8 w-8 animate-spin text-blue-600" /></div> : !plan ? <section className="mt-6 rounded-2xl border border-dashed border-slate-300 bg-white py-20 text-center"><Boxes className="mx-auto h-10 w-10 text-slate-300" /><p className="mt-4 text-sm font-bold text-slate-700">Target architecture is not available yet</p><p className="mt-1 text-xs text-slate-500">Analyze this project and generate its governed modernization plan first.</p></section> : <>
+    {loading ? <div className="flex min-h-72 items-center justify-center"><LoaderCircle className="h-8 w-8 animate-spin text-blue-600" /></div> : !plan ? <section className="mt-6 rounded-2xl border border-dashed border-slate-300 bg-white px-6 py-16 text-center"><Boxes className="mx-auto h-10 w-10 text-slate-300" /><p className="mt-4 text-sm font-bold text-slate-700">Generate the governed target architecture</p><p className="mx-auto mt-1 max-w-xl text-xs leading-5 text-slate-500">The requirements artifacts are available, but this project has not completed source analysis and architecture planning. Select the intended target stack to create those governed snapshots.</p><div className="mx-auto mt-6 max-w-2xl space-y-3"><div className="flex flex-col gap-3 sm:flex-row"><select aria-label="Target technology stack" value={targetStack} onChange={event => setTargetStack(event.target.value)} className={`${fieldClass} flex-1 text-left`}><option value="">Select target technology stack</option>{stacks.map(stack => <option key={stack.id} value={stack.id}>{stack.name}</option>)}</select><button type="button" disabled={!projectId || !targetStack || (targetStack === 'custom' && !customStackDescription.trim()) || generating} onClick={generateArchitecture} className="inline-flex min-w-56 items-center justify-center rounded-xl bg-blue-600 px-5 py-3 text-sm font-bold text-white shadow-lg shadow-blue-600/20 hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40">{generating ? <><LoaderCircle className="mr-2 h-4 w-4 animate-spin" />Generating architecture…</> : <><GitBranch className="mr-2 h-4 w-4" />Generate architecture</>}</button></div>{targetStack === 'custom' && <div className="text-left"><label htmlFor="architecture-custom-stack" className="mb-1.5 block text-xs font-bold text-slate-700">Describe the target technology stack</label><textarea id="architecture-custom-stack" rows="4" required value={customStackDescription} onChange={event => setCustomStackDescription(event.target.value)} className={fieldClass} placeholder="Example: Java 21 with Spring Boot 3, React 19 with TypeScript, PostgreSQL 17, Kafka, Docker, and Kubernetes deployment." /><p className="mt-1.5 text-[11px] leading-4 text-slate-500">Include the required languages, frameworks, database, integrations, runtime, and deployment platform.</p></div>}</div></section> : <>
       <div className="mt-6 flex items-center gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm font-semibold text-emerald-800"><CheckCircle2 className="h-5 w-5" />Requirements analysis complete. Review the target architecture before proceeding.</div>
       <div className="mt-6 grid gap-6 xl:grid-cols-[320px_minmax(0,1fr)]">
         <section className="rounded-2xl border border-slate-200 bg-white p-5"><p className="text-[10px] font-bold uppercase tracking-[0.14em] text-blue-600">Business domains identified · {domains.length}</p><div className="mt-4 space-y-2">{domains.length ? domains.map((domain, index) => <div key={String(domain)} className="flex items-start gap-3 rounded-xl border border-slate-100 bg-slate-50 p-3"><span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${['bg-blue-100 text-blue-600', 'bg-violet-100 text-violet-600', 'bg-amber-100 text-amber-600', 'bg-emerald-100 text-emerald-600'][index % 4]}`}><Boxes className="h-4 w-4" /></span><div><p className="text-xs font-bold text-slate-800">{String(domain).split('/').pop()}</p><p className="mt-1 text-[10px] leading-4 text-slate-500">Bounded capability discovered from project structure</p></div></div>) : <p className="text-xs text-slate-500">The plan did not expose explicit domain modules.</p>}</div></section>
         <section className="rounded-2xl border border-slate-200 bg-white p-5"><div className="flex items-center justify-between"><div><p className="text-[10px] font-bold uppercase tracking-[0.14em] text-blue-600">High-level architecture</p><h2 className="mt-1 text-base font-bold text-slate-900">{architectureValue(architecture.style, 'Target application topology')}</h2></div><Network className="h-6 w-6 text-blue-500" /></div>
-          <div className="mt-6 overflow-x-auto rounded-2xl border border-slate-100 bg-[radial-gradient(circle_at_center,#fff_0%,#f8fafc_100%)] p-6"><div className="mx-auto flex min-w-[620px] max-w-4xl flex-col items-center"><div className="rounded-xl border border-blue-200 bg-blue-50 px-6 py-3 text-center shadow-sm"><ShieldCheck className="mx-auto h-5 w-5 text-blue-600" /><p className="mt-1 text-xs font-bold text-blue-900">API Gateway / Experience Layer</p></div><div className="h-8 w-px bg-slate-300" /><div className="grid w-full grid-cols-4 gap-3">{services.map((service, index) => <div key={String(service)} className={`rounded-xl border p-3 text-center shadow-sm ${['border-blue-200 bg-blue-50', 'border-emerald-200 bg-emerald-50', 'border-amber-200 bg-amber-50', 'border-violet-200 bg-violet-50'][index]}`}><Server className="mx-auto h-5 w-5 text-slate-600" /><p className="mt-2 truncate text-[11px] font-bold text-slate-800">{String(service).split('/').pop()}</p><p className="mt-0.5 text-[9px] text-slate-500">Domain service</p></div>)}</div><div className="h-8 w-px bg-slate-300" /><div className="rounded-xl border border-violet-200 bg-violet-50 px-8 py-3 text-center"><Workflow className="mx-auto h-5 w-5 text-violet-600" /><p className="mt-1 text-xs font-bold text-violet-900">Integration & Event Layer</p></div><div className="h-8 w-px bg-slate-300" /><div className="rounded-xl border border-emerald-200 bg-emerald-50 px-8 py-3 text-center"><Database className="mx-auto h-5 w-5 text-emerald-600" /><p className="mt-1 text-xs font-bold text-emerald-900">{architectureValue(architecture.database, 'Managed persistence')}</p></div></div></div>
+          <div className="mt-6 overflow-x-auto rounded-2xl border border-slate-100 bg-[radial-gradient(circle_at_center,#fff_0%,#f8fafc_100%)] p-6"><div className="mx-auto flex min-w-[620px] max-w-4xl flex-col items-center"><div className="rounded-xl border border-blue-200 bg-blue-50 px-6 py-3 text-center shadow-sm"><ShieldCheck className="mx-auto h-5 w-5 text-blue-600" /><p className="mt-1 text-xs font-bold text-blue-900">API Gateway / Experience Layer</p></div><div className="h-8 w-px bg-slate-300" /><div className="flex w-full flex-wrap justify-center gap-3">{services.map((service, index) => { const serviceLabel = String(service).split('/').pop().replaceAll('-', ' '); return <div key={String(service)} title={serviceLabel} className={`relative z-10 flex w-56 min-h-24 flex-col items-center justify-center rounded-xl border p-3 text-center shadow-sm ${['border-blue-200 bg-blue-50', 'border-emerald-200 bg-emerald-50', 'border-amber-200 bg-amber-50', 'border-violet-200 bg-violet-50'][index]}`}><Server className="mx-auto h-5 w-5 shrink-0 text-slate-600" /><p className="mt-2 break-words text-[11px] font-bold leading-4 text-slate-800">{serviceLabel}</p><p className="mt-0.5 text-[9px] text-slate-500">Domain service</p></div> })}</div><div className="h-8 w-px bg-slate-300" /><div className="rounded-xl border border-violet-200 bg-violet-50 px-8 py-3 text-center"><Workflow className="mx-auto h-5 w-5 text-violet-600" /><p className="mt-1 text-xs font-bold text-violet-900">Integration & Event Layer</p></div><div className="h-8 w-px bg-slate-300" /><div className="rounded-xl border border-emerald-200 bg-emerald-50 px-8 py-3 text-center"><Database className="mx-auto h-5 w-5 text-emerald-600" /><p className="mt-1 text-xs font-bold text-emerald-900">{architectureValue(architecture.database, 'Database / Persistence Layer')}</p></div></div></div>
         </section>
       </div>
       <div className="mt-6 grid gap-6 lg:grid-cols-2"><section className="rounded-2xl border border-slate-200 bg-white p-5"><p className="text-[10px] font-bold uppercase tracking-[0.14em] text-violet-600">Technology stack</p><div className="mt-4 grid gap-2 sm:grid-cols-2">{technologies.map(value => <div key={String(value)} className="flex items-center gap-3 rounded-xl bg-slate-50 p-3 text-xs font-semibold text-slate-700"><Code2 className="h-4 w-4 text-violet-500" />{architectureValue(value)}</div>)}</div></section><section className="rounded-2xl border border-slate-200 bg-white p-5"><p className="text-[10px] font-bold uppercase tracking-[0.14em] text-emerald-600">Architecture principles</p><div className="mt-4 grid gap-2 sm:grid-cols-2">{principles.map(value => <div key={value} className="flex items-start gap-2 text-xs leading-5 text-slate-600"><CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" />{value}</div>)}</div></section></div>
-      <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-5"><p className="text-[10px] font-bold uppercase tracking-[0.14em] text-blue-600">Architecture coverage</p><div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4">{[['Domain modules', domains.length], ['Target technologies', technologies.length], ['Interfaces mapped', interfaceCount], ['Security controls', plan.security_changes?.length || 0]].map(([label, value]) => <div key={label} className="rounded-xl bg-slate-50 p-4 text-center"><p className="text-2xl font-bold text-blue-700">{value}</p><p className="mt-1 text-xs text-slate-500">{label}</p></div>)}</div><div className="mt-5 flex justify-end"><button type="button" onClick={() => navigate('/projects')} className="inline-flex items-center rounded-xl bg-blue-600 px-6 py-3 text-sm font-bold text-white shadow-lg shadow-blue-600/20 hover:bg-blue-700">Approve architecture & start forward engineering<ChevronRight className="ml-2 h-4 w-4" /></button></div></section>
+      <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-5"><p className="text-[10px] font-bold uppercase tracking-[0.14em] text-blue-600">Architecture coverage</p><div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4">{[['Domain modules', domains.length], ['Target technologies', technologies.length], ['Interfaces mapped', interfaceCount], ['Security controls', plan.security_changes?.length || 0]].map(([label, value]) => <div key={label} className="rounded-xl bg-slate-50 p-4 text-center"><p className="text-2xl font-bold text-blue-700">{value}</p><p className="mt-1 text-xs text-slate-500">{label}</p></div>)}</div><div className="mt-5 flex justify-end"><button type="button" onClick={() => navigate(`/projects?project=${encodeURIComponent(projectId)}`)} className="inline-flex items-center rounded-xl bg-blue-600 px-6 py-3 text-sm font-bold text-white shadow-lg shadow-blue-600/20 hover:bg-blue-700">Open governed plan review<ChevronRight className="ml-2 h-4 w-4" /></button></div></section>
     </>}
   </PageFrame>
 }
 
 function GeneratedAssetsRepository() {
+  const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const [projects, setProjects] = useState([])
   const [projectId, setProjectId] = useState('')
@@ -334,7 +368,7 @@ function GeneratedAssetsRepository() {
   const folders = [...new Set((catalog?.files || []).map(file => file.path.split('/')[0]).filter((value, index, values) => value && values.indexOf(value) === index))]
   return <PageFrame title="Generated Assets Repository" description="Inspect every forward-engineered source file, contract, database artifact, test, pipeline, and deployment asset from the governed output snapshot." step={6}>
     <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-[0_12px_35px_rgba(15,23,42,0.06)]"><RequirementsProjectPicker projects={projects} projectId={projectId} onChange={selectProject} />{catalog && <div className="mt-4"><ProjectIdentityBanner identity={catalog.project_identity} /></div>}</section>
-    {loading ? <div className="flex min-h-72 items-center justify-center"><LoaderCircle className="h-8 w-8 animate-spin text-blue-600" /></div> : !catalog ? <section className="mt-6 rounded-2xl border border-dashed border-slate-300 bg-white py-20 text-center"><FolderKanban className="mx-auto h-10 w-10 text-slate-300" /><p className="mt-4 text-sm font-bold text-slate-700">No generated code is available yet</p><p className="mt-1 text-xs text-slate-500">Complete forward engineering for the selected project to populate this repository.</p></section> : <>
+    {loading ? <div className="flex min-h-72 items-center justify-center"><LoaderCircle className="h-8 w-8 animate-spin text-blue-600" /></div> : !catalog ? <section className="mt-6 rounded-2xl border border-dashed border-slate-300 bg-white py-20 text-center"><FolderKanban className="mx-auto h-10 w-10 text-slate-300" /><p className="mt-4 text-sm font-bold text-slate-700">No generated code is available yet</p><p className="mt-1 text-xs text-slate-500">Complete governed plan approval and forward engineering for the selected project to populate this repository.</p><button type="button" onClick={() => navigate(`/projects?project=${encodeURIComponent(projectId)}`)} className="mt-5 inline-flex items-center rounded-xl bg-blue-600 px-5 py-2.5 text-xs font-bold text-white hover:bg-blue-700">Open forward engineering<ChevronRight className="ml-2 h-4 w-4" /></button></section> : <>
       <div className="mt-6 flex items-center gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm font-semibold text-emerald-800"><CheckCircle2 className="h-5 w-5" />Forward engineering completed. Generated assets are ready for review and download.</div>
       <div className="mt-6 grid grid-cols-2 gap-3 lg:grid-cols-5">{[['Generated files', summary.files, FileCode2], ['Lines of code', summary.lines, Code2], ['Database assets', summary.type_counts?.Database || 0, Database], ['Modules', summary.modules, Boxes], ['Pipelines', summary.type_counts?.['Pipeline / deployment'] || 0, Cloud]].map(([label, value, StatIcon]) => <div key={label} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><StatIcon className="h-5 w-5 text-blue-600" /><p className="mt-3 text-2xl font-bold text-slate-900">{Number(value || 0).toLocaleString()}</p><p className="mt-1 text-xs text-slate-500">{label}</p></div>)}</div>
       <section className="mt-6 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-[0_16px_45px_rgba(15,23,42,0.06)]"><div className="flex items-center justify-between border-b border-slate-200 px-5"><div className="flex"><button type="button" onClick={() => setView('repository')} className={`border-b-2 px-4 py-4 text-xs font-bold ${view === 'repository' ? 'border-blue-600 text-blue-700' : 'border-transparent text-slate-500'}`}>Repository view</button><button type="button" onClick={() => setView('catalog')} className={`border-b-2 px-4 py-4 text-xs font-bold ${view === 'catalog' ? 'border-blue-600 text-blue-700' : 'border-transparent text-slate-500'}`}>Artifact catalog</button></div><span className="text-[11px] text-slate-400">Snapshot v{catalog.snapshot?.version}</span></div>

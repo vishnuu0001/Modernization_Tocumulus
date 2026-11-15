@@ -974,7 +974,7 @@ def _template_from_prompt(fname: str, user_prompt: str, target: dict, project_na
     stem        = fname.rsplit("/", 1)[-1].rsplit(".", 1)[0]
     class_name  = "".join(w.capitalize() for w in stem.replace("-", "_").split("_")) or project_name
     ns          = project_name
-    offline_note = "# LLM offline \u2014 run: ollama pull devstral-small-2:24b"
+    offline_note = "# LLM offline \u2014 select an installed model in the generation runtime"
 
     if ext == "py":
         return _tpl_python(fname, user_prompt, project_name, offline_note, target)
@@ -995,5 +995,5 @@ def _template_from_prompt(fname: str, user_prompt: str, target: dict, project_na
         f"# {fname}\n\n"
         f"**Requirement:**\n\n```\n{req_lines}\n```\n\n"
         f"**Target:** {target['name']}\n\n"
-        "_LLM is offline. Run `ollama pull devstral-small-2:24b` to generate this file automatically._\n"
+        "_LLM is offline. Select an installed model in the generation runtime to generate this file._\n"
     )

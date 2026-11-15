@@ -1251,6 +1251,24 @@ def _validate_java(rel_path: str, content: str, tmp_dir: Path) -> ValidationResu
         + _spring_boot3_semantic_diagnostics(content, rel_path)
     )
     source_name = Path(rel_path).name
+    normalized_path = rel_path.replace("\\", "/")
+    java_root_marker = "/src/main/java/"
+    if java_root_marker in normalized_path:
+        package_path = normalized_path.split(java_root_marker, 1)[1].rsplit("/", 1)[0]
+        expected_package = package_path.replace("/", ".")
+        declared_package = re.search(
+            r"(?m)^\s*package\s+([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*;",
+            content,
+        )
+        if not declared_package:
+            semantic_diagnostics.append(
+                f"Java source {source_name} must declare path-matching package {expected_package}"
+            )
+        elif declared_package.group(1) != expected_package:
+            semantic_diagnostics.append(
+                f"Java source {source_name} package {declared_package.group(1)} does not match "
+                f"source path package {expected_package}"
+            )
     if source_name not in {"package-info.java", "module-info.java"}:
         expected_type = Path(rel_path).stem
         declared_types = set(re.findall(
@@ -1319,7 +1337,7 @@ def _validate_java(rel_path: str, content: str, tmp_dir: Path) -> ValidationResu
 
 # ─── TypeScript / JavaScript ────────────────────────────────────────────────────
 
-_TSC_DIAG = re.compile(r"error TS(\d+):\s*(.*)$")
+_TSC_DIAG = re.compile(r"(?:\((\d+),(\d+)\):\s*)?error TS(\d+):\s*(.*)$")
 _TSC_SYNTAX_CODE_RANGES = ((1000, 2000), (17000, 18000))
 
 
@@ -1349,7 +1367,15 @@ def _contains_jsx(content: str) -> bool:
     return bool(
         re.search(r"</[A-Za-z][\w.:-]*\s*>", jsx_text)
         or re.search(r"<>\s*[\s\S]*?</>", jsx_text)
-        or re.search(r"(?:return|=>|=)\s*(?:\(\s*)?<[A-Za-z][\w.:-]*(?:\s|/?>)", jsx_text)
+        # An opening tag without attributes is already covered by the closing
+        # and self-closing checks. Requiring an attribute or `/>` here avoids
+        # classifying valid TypeScript assertions such as `<string>value` as
+        # JSX while still recognizing `<Widget name={value}>`.
+        or re.search(
+            r"(?:return|=>|=)\s*(?:\(\s*)?<[A-Za-z][\w.:-]*"
+            r"(?:\s+[A-Za-z_:][\w:.-]*(?:\s*=\s*[^>]+)?\s*>|\s*/>)",
+            jsx_text,
+        )
         or (
             re.search(r"(?m)^\s*import\s+.+?\s+from\s+['\"]react(?:/[^'\"]*)?['\"]", text)
             and re.search(r"<[A-Za-z][\w.:-]*\b[^>]*?/\s*>", jsx_text)
@@ -1395,12 +1421,17 @@ def _validate_typescript(rel_path: str, content: str, tmp_dir: Path) -> Validati
         m = _TSC_DIAG.search(line)
         if not m:
             continue
-        code, message = int(m.group(1)), m.group(2)
+        line_number, column_number, code_text, message = m.groups()
+        code = int(code_text)
         if any(start <= code < end for start, end in _TSC_SYNTAX_CODE_RANGES):
             # TS1xxx and TS17xxx = syntactic/JSX parse errors — always real.
             # TS2xxx+ = semantic/type/module-resolution errors — expected
             # noise since the generated project has no installed node_modules.
-            diagnostics.append(f"TS{code}: {message}")
+            location = (
+                f"line {line_number}:{column_number}: "
+                if line_number and column_number else ""
+            )
+            diagnostics.append(f"{location}TS{code}: {message}")
 
     return ValidationResult(rel_path, "typescript", "compiler", len(diagnostics) == 0, diagnostics)
 

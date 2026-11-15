@@ -1457,35 +1457,15 @@ def pick_codegen_model() -> str | None:
 
 
 def pick_fast_codegen_model(fallback: str | None = None) -> str | None:
-    """Return an installed compact model for a bounded simple-file request.
-
-    ``OLLAMA_FAST_CODE_MODEL`` can pin an exact deployment-approved tag. An
-    explicitly configured tag fails back to the regular model when it is not
-    installed instead of silently choosing a different compact model.
-    """
-    available = check_status().get("models", [])
-    configured = (os.getenv("OLLAMA_FAST_CODE_MODEL") or "").strip()
-    if configured:
-        return configured if configured in available else fallback
-    from services.llm_runtime import requested_model
-    requested = requested_model()
-    if requested and requested in available:
-        return requested
-    return _pick_model(available, FAST_CODEGEN_PREFERRED_MODELS) or fallback
+    """Use the top-level runtime selection for simple-file generation."""
+    status = check_status()
+    runtime = status.get("runtime") or {}
+    return runtime.get("selected_model") or status.get("active_model") or fallback
 
 
 # Function: pick_compiler_repair_model
 def pick_compiler_repair_model(fallback: str | None = None) -> str | None:
-    """Use the supported default for compiler-guided rewrites when available."""
-    available = check_status().get("models", [])
-    from services.llm_runtime import requested_model
-    requested = requested_model()
-    if requested and requested in available:
-        return requested
-    preferred = [
-        DEVSTRAL_MODEL,
-        DEEPSEEK_CODER_67B_MODEL,
-        QWEN3_CODER_30B_MODEL,
-        QWEN25_CODER_32B_MODEL,
-    ]
-    return _pick_model(available, preferred) or fallback
+    """Use the top-level runtime selection for compiler-guided rewrites."""
+    status = check_status()
+    runtime = status.get("runtime") or {}
+    return runtime.get("selected_model") or status.get("active_model") or fallback

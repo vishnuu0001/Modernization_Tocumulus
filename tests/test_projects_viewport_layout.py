@@ -75,3 +75,25 @@ def test_plan_actions_are_rendered_only_in_the_fixed_action_dock():
 
     assert 'md:grid-cols-[1fr_1fr_auto]' not in scrollable_content
     assert '<FileDiff className="mr-2 inline h-4 w-4" />Compare' in action_dock
+
+
+def test_architecture_and_generated_asset_empty_states_are_actionable():
+    requirements_source = (
+        ROOT / "frontend" / "src" / "pages" / "RequirementsDocumentationPage.jsx"
+    ).read_text(encoding="utf-8")
+    projects_source = (
+        ROOT / "frontend" / "src" / "pages" / "ProjectsPage.jsx"
+    ).read_text(encoding="utf-8")
+
+    assert "analyzeProject(projectId, targetStack, customDescription)" in requirements_source
+    assert "generateProjectPlan(projectId, targetStack, customDescription)" in requirements_source
+    assert "Select target technology stack" in requirements_source
+    assert "Custom technology stack" in requirements_source
+    assert 'id="architecture-custom-stack"' in requirements_source
+    assert "Generate architecture" in requirements_source
+    assert "Open forward engineering" in requirements_source
+    assert "flex w-full flex-wrap justify-center gap-3" in requirements_source
+    assert "replaceAll('-', ' ')" in requirements_source
+    assert "Database / Persistence Layer" in requirements_source
+    assert "useSearchParams" in projects_source
+    assert "searchParams.get('project')" in projects_source

@@ -602,6 +602,28 @@ class GenerationPerformanceTests(unittest.TestCase):
         self.assertIn("UserServiceClient.getUserById(...)", output[client_path])
         self.assertNotIn("return <section>", output[client_path])
 
+    def test_frontend_closure_treats_dto_runtime_use_as_non_react_class_contract(self):
+        output = {
+            "Demo/frontend/src/components/AuthPage.tsx": (
+                "import { ErrorResponseDto } from './dto/Error.dto';\n"
+                "export function AuthPage() {\n"
+                "  const error: unknown = new Error('failed');\n"
+                "  const message = error instanceof ErrorResponseDto ? error.message : 'failed';\n"
+                "  return <main>{message}</main>;\n"
+                "}\n"
+            )
+        }
+
+        added = _pf_expand_generated_source_closure(output, "Demo")
+
+        path = "Demo/frontend/src/components/dto/Error.dto.ts"
+        self.assertIn(path, added)
+        contract = output[path]
+        self.assertIn("non-React TypeScript data-contract module", contract)
+        self.assertIn("MUST be exported classes: ErrorResponseDto", contract)
+        self.assertIn("instanceof ErrorResponseDto", contract)
+        self.assertNotIn("return <main>", contract)
+
     def test_java_files_run_in_parallel_dependency_waves(self):
         activity_lock = threading.Lock()
         active = 0
@@ -1025,6 +1047,28 @@ class GenerationPerformanceTests(unittest.TestCase):
                 )
 
         self.assertNotIn(path, output)
+
+    def test_closure_generation_commits_ts_to_tsx_migration_without_contract_residue(self):
+        path = "Demo/frontend/src/components/AuthView.ts"
+        migrated = "Demo/frontend/src/components/AuthView.tsx"
+        output = {path: "Create the missing React component module"}
+        source = "export const AuthView = () => <main>Authentication</main>;\n"
+
+        def generate(files, *_args, **_kwargs):
+            files.pop(path)
+            files[migrated] = source
+
+        with patch(
+            "services.modernizer.domain_generators.dispatch._ollama_generate_all_sources",
+            side_effect=generate,
+        ):
+            _pf_generate_source_delta(
+                output, [path], {"language": "java"}, "Demo", "model", "system",
+                lambda *_args: None,
+            )
+
+        self.assertNotIn(path, output)
+        self.assertEqual(source, output[migrated])
 
 
 if __name__ == "__main__":

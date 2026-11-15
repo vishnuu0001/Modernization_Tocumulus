@@ -43,9 +43,6 @@ logger = logging.getLogger(__name__)
 CONTEXT_LIMIT = 48_000
 EVIDENCE_LIMIT = 22_000
 DOCUMENT_TYPES = {"brd", "fsd", "knowledge_graph"}
-REQUIREMENTS_PREFERRED_MODELS = (
-    llm.DEVSTRAL_MODEL, "deepseek-coder:6.7b", "qwen2.5-coder:3b",
-)
 
 # Each observed capability gets full (not excerpted) source content for the
 # handful of files behind it — field names, action codes, and stored-procedure
@@ -532,37 +529,21 @@ def _extract_json(text: str) -> dict:
 
 
 def _requirements_model() -> str | None:
-    available = llm.check_status().get("models", [])
-    return next((model for model in REQUIREMENTS_PREFERRED_MODELS if model in available), None) or llm.pick_codegen_model()
+    """Return the model selected by the top-level runtime control."""
+    status = llm.check_status()
+    runtime = status.get("runtime") or {}
+    return runtime.get("selected_model") or status.get("active_model")
 
 
-# The knowledge graph is the one remaining single-completion call in this
-# module and needs the full per-file evidence payload to cite individual
-# files as graph nodes — a much bigger prompt than the BRD/FSD path's small,
-# per-capability calls now use. deepseek-coder:6.7b (REQUIREMENTS_PREFERRED_
-# MODELS' first choice) has a native context window of only 16,384 tokens;
-# sizing that big a prompt right up to the ceiling left ~0 headroom for the
-# completion, so Ollama returned 200 OK but a truncated/malformed response —
-# "Ollama did not return a JSON knowledge graph" even though every call
-# succeeded at the transport level. Prefer a larger-context installed model
-# for this task specifically, and size the evidence payload to leave real
-# headroom below whichever model's window actually gets used.
-GRAPH_PREFERRED_MODELS = (
-    llm.DEVSTRAL_MODEL,
-    "qwen2.5-coder:3b", "deepseek-coder:6.7b",
-)
+# Knowledge-graph evidence is larger than the BRD/FSD capability prompts, but
+# it still uses the operator-selected runtime model. Size evidence against the
+# deployment-owned context window instead of silently substituting a model.
 _GRAPH_MAX_TOKENS = 4_096
-_GRAPH_CONTEXT_WINDOW_BY_MODEL = {
-    llm.DEVSTRAL_MODEL: 393_216,
-    "qwen2.5-coder:3b": 32_768,
-    "deepseek-coder:6.7b": 16_384,
-}
-_GRAPH_CONTEXT_WINDOW_DEFAULT = 16_384
 
 
 def _graph_model() -> str | None:
-    available = llm.check_status().get("models", [])
-    return next((model for model in GRAPH_PREFERRED_MODELS if model in available), None) or llm.pick_codegen_model()
+    """Compatibility wrapper for the authoritative runtime selection."""
+    return _requirements_model()
 
 
 def _safe_generate(description: str, **kwargs) -> str:
@@ -1174,6 +1155,7 @@ def _open_items_markdown(index: int) -> str:
 def generate_requirement_artifact(
     document_type: str, project: dict, source_path: str | Path,
     on_token: Callable[[str], None] | None = None,
+    model: str | None = None,
 ) -> dict:
     """Generate one requirements artifact.
 
@@ -1189,16 +1171,15 @@ def generate_requirement_artifact(
     manifest, excerpts = _source_evidence(source_path)
     capabilities = _functional_capability_inventory(manifest)
     identity = _project_identity(project)
+    model = str(model or _requirements_model() or "").strip()
+    if not model:
+        raise RuntimeError("Ollama is unavailable or no runtime model is selected")
 
     if document_type == "knowledge_graph":
-        model = _graph_model()
-        if not model:
-            raise RuntimeError("Ollama is unavailable or no supported model is installed")
-        graph_num_ctx = _GRAPH_CONTEXT_WINDOW_BY_MODEL.get(model, _GRAPH_CONTEXT_WINDOW_DEFAULT)
+        graph_num_ctx = llm.model_context_window(model)
         # Leave real headroom for the completion below whichever model's
         # context window actually gets used, rather than sizing the evidence
-        # payload right up to the ceiling with ~0 margin (see GRAPH_PREFERRED_
-        # MODELS comment above) — this is what previously produced a
+        # payload right up to the ceiling with ~0 margin — this previously produced a
         # truncated/malformed response despite every /api/generate call
         # succeeding at the transport level.
         if graph_num_ctx >= 32_000:
@@ -1284,9 +1265,6 @@ OUTPUT CONTRACT:
         for edge in edges:
             edge["project_id"] = identity["project_id"]
     elif document_type == "brd":
-        model = _requirements_model()
-        if not model:
-            raise RuntimeError("Ollama is unavailable or no supported model is installed")
         content = "\n\n".join([
             _document_control_markdown("brd", identity),
             _brd_introduction_markdown(identity, capabilities, manifest),
@@ -1298,9 +1276,6 @@ OUTPUT CONTRACT:
         ])
         artifact = {"title": "Business Requirements Document", "content": content}
     else:
-        model = _requirements_model()
-        if not model:
-            raise RuntimeError("Ollama is unavailable or no supported model is installed")
         modules_markdown = _generate_modules(capabilities, source_path, model, on_token)
         next_index = 4 + max(len(capabilities), 1)
         content = "\n\n".join([

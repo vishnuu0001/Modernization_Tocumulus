@@ -59,7 +59,7 @@ def test_rejects_unknown_document_type():
         generate_requirement_artifact("unknown", {}, ".")
 
 
-def test_graph_model_prefers_devstral_over_deepseek_coder():
+def test_graph_model_uses_top_level_runtime_selection():
     """deepseek-coder:6.7b is REQUIREMENTS_PREFERRED_MODELS' first choice (fine
     for the small, per-capability BRD/FSD calls) but has only a 16,384-token
     native context — too little headroom for the knowledge graph's much
@@ -67,22 +67,61 @@ def test_graph_model_prefers_devstral_over_deepseek_coder():
     model when one is installed, rather than reusing that default."""
     with patch(
         "services.requirements_documentation.llm.check_status",
-        return_value={"models": ["deepseek-coder:6.7b", "devstral-small-2:24b"]},
+        return_value={
+            "models": ["deepseek-coder:6.7b", "devstral-small-2:24b"],
+            "active_model": "deepseek-coder:6.7b",
+            "runtime": {"selected_model": "deepseek-coder:6.7b"},
+        },
     ):
-        assert _graph_model() == "devstral-small-2:24b"
+        assert _graph_model() == "deepseek-coder:6.7b"
     with patch(
         "services.requirements_documentation.llm.check_status",
-        return_value={"models": ["deepseek-coder:6.7b"]},
+        return_value={
+            "models": ["devstral-small-2:24b", "qwen3.5:9b"],
+            "active_model": "qwen3.5:9b",
+            "runtime": {"selected_model": "qwen3.5:9b"},
+        },
     ):
-        assert _graph_model() == "deepseek-coder:6.7b"  # falls back when it's all that's installed
+        assert _graph_model() == "qwen3.5:9b"
 
 
-def test_graph_model_prefers_devstral_when_installed():
+def test_graph_model_does_not_substitute_an_installed_preferred_model():
     with patch(
         "services.requirements_documentation.llm.check_status",
-        return_value={"models": ["qwen3.5:9b", "devstral-small-2:24b"]},
+        return_value={
+            "models": ["qwen3.5:9b", "devstral-small-2:24b"],
+            "active_model": "qwen3.5:9b",
+            "runtime": {"selected_model": "qwen3.5:9b"},
+        },
     ):
-        assert _graph_model() == "devstral-small-2:24b"
+        assert _graph_model() == "qwen3.5:9b"
+
+
+def test_knowledge_graph_uses_job_snapshot_model_even_if_runtime_status_changes(tmp_path):
+    (tmp_path / "a.py").write_text("def x():\n    return 1\n", encoding="utf-8")
+    captured = {}
+
+    def fake_generate(model=None, **_kwargs):
+        captured["model"] = model
+        return '{"nodes":[' + ",".join(
+            f'{{"id":"n{i}","label":"N{i}","type":"feature"}}' for i in range(15)
+        ) + '],"edges":[{"source":"n0","target":"n1","relationship":"uses"}]}'
+
+    with patch(
+        "services.requirements_documentation.llm.check_status",
+        return_value={"active_model": "devstral-small-2:24b"},
+    ), patch(
+        "services.requirements_documentation.llm.generate", side_effect=fake_generate,
+    ):
+        artifact = generate_requirement_artifact(
+            "knowledge_graph",
+            {"id": "APP-005", "name": "Small", "configuration": {}},
+            tmp_path,
+            model="qwen3.5:9b",
+        )
+
+    assert captured["model"] == "qwen3.5:9b"
+    assert artifact["model"] == "qwen3.5:9b"
 
 
 def test_knowledge_graph_sizes_evidence_payload_to_the_selected_models_context(tmp_path):
@@ -98,7 +137,10 @@ def test_knowledge_graph_sizes_evidence_payload_to_the_selected_models_context(t
         captured["prompt_len"] = len(prompt or "")
         return '{"nodes":[' + ",".join(f'{{"id":"n{i}","label":"N{i}","type":"feature"}}' for i in range(15)) + '],"edges":[{"source":"n0","target":"n1","relationship":"uses"}]}'
 
-    with patch("services.requirements_documentation.llm.check_status", return_value={"models": ["deepseek-coder:6.7b"]}), \
+    with patch("services.requirements_documentation.llm.check_status", return_value={
+            "models": ["deepseek-coder:6.7b"], "active_model": "deepseek-coder:6.7b",
+            "runtime": {"selected_model": "deepseek-coder:6.7b"},
+         }), patch("services.requirements_documentation.llm.model_context_window", return_value=16_384), \
          patch("services.requirements_documentation.llm.generate", side_effect=fake_generate):
         generate_requirement_artifact("knowledge_graph", {
             "id": "APP-005", "name": "Small", "configuration": {},
@@ -113,7 +155,10 @@ def test_knowledge_graph_sizes_evidence_payload_to_the_selected_models_context(t
 
 def test_knowledge_graph_raises_a_clear_error_when_both_attempts_are_unparseable(tmp_path):
     (tmp_path / "a.py").write_text("def x():\n    return 1\n", encoding="utf-8")
-    with patch("services.requirements_documentation.llm.check_status", return_value={"models": ["deepseek-coder:6.7b"]}), \
+    with patch("services.requirements_documentation.llm.check_status", return_value={
+            "models": ["deepseek-coder:6.7b"], "active_model": "deepseek-coder:6.7b",
+            "runtime": {"selected_model": "deepseek-coder:6.7b"},
+         }), \
          patch("services.requirements_documentation.llm.generate", return_value="not json at all"):
         with pytest.raises(RuntimeError, match="did not return a usable knowledge graph"):
             generate_requirement_artifact("knowledge_graph", {

@@ -12,6 +12,27 @@ from collections.abc import Callable
 logger = logging.getLogger(__name__)
 
 
+def _java_file_identity_contract(rel_path: str, type_name: str) -> str:
+    """Put compilation-unit identity before noisy legacy source evidence."""
+    normalized = rel_path.replace("\\", "/")
+    package_name = ""
+    if "/src/main/java/" in normalized:
+        package_name = (
+            normalized.split("/src/main/java/", 1)[1]
+            .rsplit("/", 1)[0]
+            .replace("/", ".")
+        )
+    package_rule = f"Declare exactly `package {package_name};`.\n" if package_name else ""
+    return (
+        "AUTHORITATIVE JAVA COMPILATION-UNIT IDENTITY (mandatory):\n"
+        f"Output path: {rel_path}\n"
+        f"Declare the filename-matching public top-level type `{type_name}` exactly once.\n"
+        f"{package_rule}"
+        "Do not substitute a legacy, neighboring, table-derived, or source-evidence type name. "
+        "Use source evidence only for fields and behavior.\n\n"
+    )
+
+
 def _normalize_spring_entity_contract(content: str) -> str:
     """Expose the Boolean accessor contract used by the Spring service scaffold.
 
@@ -105,7 +126,7 @@ def _java_entity_prompt_quarkus(domain, root_ns, domain_tables, context, prod_ru
     return (
         f"{context}\n{prod_rules}{source_sec}{guide_sec}\n\n"
         f"Generate a COMPLETE Quarkus Hibernate ORM entity + DTO in package com.{root_ns.lower()}.{domain.lower()}.model:\n"
-        f"1. @Entity @Table(name = \"{table}\") class {domain.rstrip('s')} with:\n"
+        f"1. @Entity @Table(name = \"{table}\") class {domain} with:\n"
         f"   - @Id @GeneratedValue(strategy = GenerationType.IDENTITY) Long id\n"
         f"   - ALL business fields with appropriate JPA @Column constraints (nullable, length, unique)\n"
         f"   - Boolean isActive = true with @Column(nullable=false)\n"
@@ -113,9 +134,9 @@ def _java_entity_prompt_quarkus(domain, root_ns, domain_tables, context, prod_ru
         f"   - LocalDateTime updatedAt auto-set via @PreUpdate\n"
         f"   - Plain getters/setters (no Lombok - it is not a default Quarkus dependency)\n"
         f"   - Business-relevant fields inferred from domain '{domain}' and tables: {', '.join(domain_tables)}\n"
-        f"2. {domain.rstrip('s')}CreateRequest record with full Jakarta Bean Validation (@NotNull/@NotBlank/@Size)\n"
-        f"3. {domain.rstrip('s')}UpdateRequest record with full validation\n"
-        f"4. {domain.rstrip('s')}Response record (safe read model, no sensitive fields)\n"
+        f"2. {domain}CreateRequest record with full Jakarta Bean Validation (@NotNull/@NotBlank/@Size)\n"
+        f"3. {domain}UpdateRequest record with full validation\n"
+        f"4. {domain}Response record (safe read model, no sensitive fields)\n"
         f"5. {domain}Mapper utility class with static toResponse(), toEntity() helper methods\n"
         f"Output ONLY the Java file with all 5 declarations. No markdown fences."
     )
@@ -127,16 +148,16 @@ def _java_entity_prompt_micronaut(domain, root_ns, domain_tables, context, prod_
     return (
         f"{context}\n{prod_rules}{source_sec}{guide_sec}\n\n"
         f"Generate a COMPLETE Micronaut Data JDBC entity + DTO in package com.{root_ns.lower()}.{domain.lower()}.model:\n"
-        f"1. @MappedEntity(\"{table}\") class {domain.rstrip('s')} with:\n"
+        f"1. @MappedEntity(\"{table}\") class {domain} with:\n"
         f"   - @Id @GeneratedValue(GeneratedValue.Type.IDENTITY) Long id\n"
         f"   - ALL business fields with appropriate types, matching the source columns\n"
         f"   - Boolean isActive = true\n"
         f"   - LocalDateTime createdAt, LocalDateTime updatedAt\n"
         f"   - Plain getters/setters and an all-args constructor (no Lombok - not a default Micronaut dependency)\n"
         f"   - Business-relevant fields inferred from domain '{domain}' and tables: {', '.join(domain_tables)}\n"
-        f"2. {domain.rstrip('s')}CreateRequest record with full Jakarta Bean Validation (@NotNull/@NotBlank/@Size)\n"
-        f"3. {domain.rstrip('s')}UpdateRequest record with full validation\n"
-        f"4. {domain.rstrip('s')}Response record (safe read model, no sensitive fields)\n"
+        f"2. {domain}CreateRequest record with full Jakarta Bean Validation (@NotNull/@NotBlank/@Size)\n"
+        f"3. {domain}UpdateRequest record with full validation\n"
+        f"4. {domain}Response record (safe read model, no sensitive fields)\n"
         f"5. {domain}Mapper utility class with static toResponse(), toEntity() helper methods\n"
         f"Output ONLY the Java file with all 5 declarations. No markdown fences."
     )
@@ -214,6 +235,7 @@ def _llm_domain_java(
             f"Output ONLY the complete Java file. No markdown fences."
         )
         _rel = f"{base}/controller/{domain}Controller.java"
+        prompt = _java_file_identity_contract(_rel, f"{domain}Controller") + prompt
         _content, _result, _attempts = _generate_validated(
             prompt, model=model, system=system, max_tokens=_TOKENS_DEFAULT,
             num_ctx=_adaptive_num_ctx(len(prompt) + len(system), _TOKENS_DEFAULT),
@@ -221,11 +243,11 @@ def _llm_domain_java(
             on_attempt=(lambda a, m, _d=domain: on_step(f"[{_d}] Fixing Controller — attempt {a}/{m}…")) if on_step else None,
             generation_max_seconds=_JAVA_FILE_GENERATION_MAX_SECONDS,
         )
-        files[_rel] = _content
         if on_validation:
             on_validation(_result, _attempts)
         if not _result.passed:
             raise RuntimeError(f"Java validation failed for {_rel}: {'; '.join(_result.diagnostics)}")
+        files[_rel] = _content
         generated_paths.add(_rel)
     except Exception as exc:
         logger.exception("Java controller generation failed for %s", domain)
@@ -258,6 +280,7 @@ def _llm_domain_java(
             f"Output ONLY the complete {domain}.java file. No markdown fences."
         )
         _rel = f"{base}/model/{domain}.java"
+        prompt = _java_file_identity_contract(_rel, domain) + prompt
         _content, _result, _attempts = _generate_validated(
             prompt, model=model, system=system, max_tokens=_TOKENS_DEFAULT,
             num_ctx=_adaptive_num_ctx(len(prompt) + len(system), _TOKENS_DEFAULT),
@@ -267,11 +290,11 @@ def _llm_domain_java(
         )
         if not (is_quarkus or is_micronaut):
             _content = _normalize_spring_entity_contract(_content)
-        files[_rel] = _content
         if on_validation:
             on_validation(_result, _attempts)
         if not _result.passed:
             raise RuntimeError(f"Java validation failed for {_rel}: {'; '.join(_result.diagnostics)}")
+        files[_rel] = _content
         generated_paths.add(_rel)
     except Exception as exc:
         logger.exception("Java entity generation failed for %s", domain)

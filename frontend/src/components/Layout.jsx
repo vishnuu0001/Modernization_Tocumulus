@@ -18,7 +18,7 @@ function LlmStatusChip() {
   }
 
   useEffect(() => {
-    getLlmStatus().then(adoptStatus).catch(() => setStatus({ available: false, recommended: 'devstral-small-2:24b' }))
+    getLlmStatus().then(adoptStatus).catch(() => setStatus({ available: false }))
   }, [])
 
   if (!status) return null
