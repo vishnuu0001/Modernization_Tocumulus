@@ -376,6 +376,62 @@ class JavaDomainGeneratorTimeBudgetTests(unittest.TestCase):
         self.assertNotIn("PanacheEntity", controller)
         self.assertNotIn("Uni<", controller)
 
+    def test_quarkus_domain_generation_recovers_invalid_panache_alias_before_failure(self):
+        from services.modernizer.domain_generators.java import _llm_domain_java
+
+        controller_path = (
+            "ModernizedApp/services/transaction-service/src/main/java/"
+            "com/acme/transaction/controller/TransactionController.java"
+        )
+        entity_path = (
+            "ModernizedApp/services/transaction-service/src/main/java/"
+            "com/acme/transaction/model/Transaction.java"
+        )
+        generated = [
+            (
+                "package com.acme.transaction.controller;\n"
+                "import java.util.List;\n"
+                "import io.quarkus.hibernate.orm.panache.PanacheEntity;\n"
+                "import io.quarkus.panache.common.List as PanacheList;\n"
+                "public class TransactionController { PanacheList values; }\n",
+                ValidationResult(
+                    controller_path, "java", "compiler", False,
+                    ["line 4: ';' expected"],
+                ),
+                3,
+            ),
+            (
+                "package com.acme.transaction.model;\n"
+                "import jakarta.persistence.Entity;\n"
+                "@Entity public class Transaction { public Transaction() {} }\n",
+                ValidationResult(entity_path, "java", "compiler", True, []),
+                1,
+            ),
+        ]
+        files = {}
+        validations = []
+
+        with patch(
+            "services.modernizer.validation_orchestration._generate_validated",
+            side_effect=generated,
+        ):
+            _llm_domain_java(
+                files=files, domain="Transaction", root_ns="acme",
+                domain_tables=["TRANSACTION"], antipatterns=[], context="ctx",
+                prod_rules="", source_sec="", guide_sec="", model="qwen3.5:9b",
+                system="sys", tables=["TRANSACTION"],
+                target={"backend_tech": "Java 21 Quarkus", "db_target": "postgres"},
+                on_step=None, generate=lambda *args, **kwargs: "",
+                on_validation=lambda result, attempts: validations.append((result, attempts)),
+            )
+
+        controller = files[controller_path]
+        self.assertIn("private final ITransactionService service;", controller)
+        self.assertIn("return service.findAll();", controller)
+        self.assertNotIn("PanacheEntity", controller)
+        self.assertNotIn(" as PanacheList", controller)
+        self.assertTrue(validations[0][0].passed)
+
     def test_quarkus_domain_generation_rejects_nonexistent_response_location_builder(self):
         from services.modernizer.domain_generators.java import _llm_domain_java
 

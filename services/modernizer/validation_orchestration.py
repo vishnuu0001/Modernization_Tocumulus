@@ -666,6 +666,51 @@ def _normalize_jakarta_namespace(content: str) -> str:
     return _JAVAX_TO_JAKARTA_IMPORT.sub(r"\1jakarta.\2.", content)
 
 
+_JAVA_ALIAS_IMPORT = re.compile(
+    r"(?m)^(?P<indent>\s*)import\s+(?P<static>static\s+)?"
+    r"(?P<fqcn>[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+)\s+as\s+"
+    r"(?P<alias>[A-Za-z_$][\w$]*)\s*;\s*$"
+)
+
+
+def _normalize_java_import_aliases(content: str) -> str:
+    """Convert Kotlin-style alias imports into legal Java references.
+
+    Java has no ``import ... as Alias`` syntax. If the simple name is already
+    imported from another package, use the fully-qualified reference and drop
+    the illegal import; otherwise restore a normal import and the real simple
+    name. This mechanical repair is idempotent and preserves the selected type.
+    """
+    matches = list(_JAVA_ALIAS_IMPORT.finditer(content))
+    if not matches:
+        return content
+    ordinary_imports = set(re.findall(
+        r"(?m)^\s*import\s+(?:static\s+)?([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+)\s*;",
+        content,
+    ))
+    repaired = content
+    for match in matches:
+        fqcn = match.group("fqcn")
+        alias = match.group("alias")
+        simple_name = fqcn.rsplit(".", 1)[-1]
+        has_simple_name_conflict = any(
+            imported != fqcn and imported.rsplit(".", 1)[-1] == simple_name
+            for imported in ordinary_imports
+        )
+        replacement_name = fqcn if has_simple_name_conflict else simple_name
+        repaired = re.sub(rf"\b{re.escape(alias)}\b", replacement_name, repaired)
+        legal_import = "" if has_simple_name_conflict else (
+            f"{match.group('indent')}import {match.group('static') or ''}{fqcn};"
+        )
+        repaired = re.sub(
+            rf"(?m)^\s*import\s+(?:static\s+)?{re.escape(fqcn)}\s+as\s+"
+            rf"{re.escape(replacement_name)}\s*;\s*$",
+            legal_import,
+            repaired,
+        )
+    return repaired
+
+
 # Function: _single_file_extension
 def _single_file_extension(language: str, content: str) -> str:
     """Choose the compiler-facing extension for standalone generated source.
@@ -1007,6 +1052,7 @@ def _generate_validated(
         content = _repair_oracle_bind_variable_views(content, dialect)
     if language == "java":
         content = _normalize_jakarta_namespace(content)
+        content = _normalize_java_import_aliases(content)
         logger.info(
             "Java generation timing path=%s attempt=1 inference=%.3fs prompt_chars=%d output_chars=%d",
             rel_path, time.monotonic() - inference_started, len(prompt), len(content),
@@ -1084,7 +1130,10 @@ def _generate_validated(
         if validation_language == "java":
             language_repair_rules = (
                 "\nJava/Spring Boot 3 repair rules: use jakarta.* rather than legacy javax.* "
-                "enterprise APIs. Controllers declare request inputs directly on method "
+                "enterprise APIs. "
+                "Java has no import aliases: never emit `import ... as ...`; use a normal "
+                "import or the fully-qualified type name when simple names conflict. "
+                "Controllers declare request inputs directly on method "
                 "parameters. If Idempotency-Key is required, use exactly "
                 '`@RequestHeader(name = "Idempotency-Key") String idempotencyKey` in the '
                 "mapped controller method and pass that value to the service; do not use "
@@ -1312,6 +1361,7 @@ def _generate_validated(
             content = _repair_oracle_bind_variable_views(content, dialect)
         if language == "java":
             content = _normalize_jakarta_namespace(content)
+            content = _normalize_java_import_aliases(content)
             logger.info(
                 "Java generation timing path=%s attempt=%d inference=%.3fs prompt_chars=%d output_chars=%d",
                 rel_path, attempt, time.monotonic() - inference_started, len(fix_prompt), len(content),

@@ -407,6 +407,16 @@ public class ServiceImpl implements MissingService {
         result = validate_file("Broken.java", source, "java")
         self.assertFalse(result.passed)
 
+    def test_java_preflight_explains_that_import_aliases_are_not_java_syntax(self):
+        source = """
+package demo;
+import io.quarkus.panache.common.List as PanacheList;
+public class Broken { PanacheList values; }
+"""
+        result = validate_file("Broken.java", source, "java")
+        self.assertFalse(result.passed)
+        self.assertIn("Java does not support import aliases", "\n".join(result.diagnostics))
+
     def test_csharp_preflight_rejects_multi_file_sentinel_with_actionable_diagnostic(self):
         source = """
 namespace Demo;

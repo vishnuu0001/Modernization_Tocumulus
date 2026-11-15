@@ -17,6 +17,38 @@ from services.validators import ValidationResult
 
 
 class LlmValidationLoopTests(unittest.TestCase):
+    def test_java_alias_import_normalization_uses_fqcn_on_simple_name_conflict(self):
+        from services.modernizer.validation_orchestration import _normalize_java_import_aliases
+
+        source = (
+            "package demo;\n"
+            "import java.util.List;\n"
+            "import io.quarkus.panache.common.List as PanacheList;\n"
+            "class Demo { List<String> normal; PanacheList special; }\n"
+        )
+
+        repaired = _normalize_java_import_aliases(source)
+
+        self.assertNotIn(" as ", repaired)
+        self.assertNotIn("import io.quarkus.panache.common.List;", repaired)
+        self.assertIn("List<String> normal", repaired)
+        self.assertIn("io.quarkus.panache.common.List special", repaired)
+        self.assertEqual(repaired, _normalize_java_import_aliases(repaired))
+
+    def test_java_alias_import_normalization_restores_ordinary_import_without_conflict(self):
+        from services.modernizer.validation_orchestration import _normalize_java_import_aliases
+
+        source = (
+            "package demo;\n"
+            "import java.time.Instant as Timestamp;\n"
+            "class Demo { Timestamp createdAt; }\n"
+        )
+
+        repaired = _normalize_java_import_aliases(source)
+
+        self.assertIn("import java.time.Instant;", repaired)
+        self.assertIn("Instant createdAt", repaired)
+        self.assertNotIn("Timestamp", repaired)
     # Function: test_requirement_placeholders_are_distinguished_from_html
     def test_requirement_placeholders_are_distinguished_from_html(self):
         prompt = "PROGRAM-ID <PROGRAM-ID>; render <div class=\"app\">ok</div>; input <file name and LRECL>"

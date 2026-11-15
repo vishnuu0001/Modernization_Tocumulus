@@ -66,6 +66,7 @@ def _quarkus_controller_violates_service_topology(content: str, domain: str) -> 
         return True
     incompatible = (
         r"\bPanacheEntity(?:Base)?\b",
+        r"\bio\.quarkus\.(?:hibernate\.orm\.panache|panache\.common)\.",
         r"\bUni\s*<",
         r"\.asUni\s*\(",
         r"\bResponse\.locationBuilder\s*\(",
@@ -93,6 +94,11 @@ def _java_controller_prompt_quarkus(domain, root_ns, domain_tables, antipatterns
         f"log.infof(\"Loaded id=%s\", id); never use SLF4J-style "
         f"log.info(\"Loaded id={{}}\", id)\n"
         f"- Constructor injection of I{domain}Service (CDI, no field injection)\n"
+        f"- Import java.util.List for list responses. Java does not support import aliases: never "
+        f"write `import ... as ...`, never invent PanacheList, and never import "
+        f"io.quarkus.panache.common.List\n"
+        f"- This resource is service-backed: do not import or call PanacheEntity, PanacheRepository, "
+        f"or reactive Uni directly from the controller\n"
         f"- Compile against exactly these service methods: List<{domain}> findAll(), "
         f"Optional<{domain}> findById(Long), {domain} create({domain}), "
         f"{domain} update(Long, {domain}), void delete(Long); do not invent aliases\n"
@@ -271,10 +277,6 @@ def _llm_domain_java(
             on_attempt=(lambda a, m, _d=domain: on_step(f"[{_d}] Fixing Controller — attempt {a}/{m}…")) if on_step else None,
             generation_max_seconds=_JAVA_FILE_GENERATION_MAX_SECONDS,
         )
-        if on_validation:
-            on_validation(_result, _attempts)
-        if not _result.passed:
-            raise RuntimeError(f"Java validation failed for {_rel}: {'; '.join(_result.diagnostics)}")
         if is_quarkus and _quarkus_controller_violates_service_topology(_content, domain):
             # Syntax validation cannot detect that a plain JPA entity and a
             # PanacheRepository service were paired with an Active Record or
@@ -290,6 +292,10 @@ def _llm_domain_java(
                     f"Deterministic Quarkus controller validation failed for {_rel}: "
                     f"{'; '.join(_result.diagnostics)}"
                 )
+        if on_validation:
+            on_validation(_result, _attempts)
+        if not _result.passed:
+            raise RuntimeError(f"Java validation failed for {_rel}: {'; '.join(_result.diagnostics)}")
         files[_rel] = _content
         generated_paths.add(_rel)
     except Exception as exc:

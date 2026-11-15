@@ -1099,6 +1099,15 @@ _JAVAC_ERROR_LINE = re.compile(r"^.*\.java:(\d+): error: (.*)$")
 def _java_import_diagnostics(content: str) -> list[str]:
     """Recover common missing-JDK-import errors hidden by classpath-noise filtering."""
     diagnostics: list[str] = []
+    alias_imports = re.findall(
+        r"(?m)^\s*import\s+(?:static\s+)?([\w.]+)\s+as\s+([A-Za-z_$][\w$]*)\s*;",
+        content,
+    )
+    diagnostics.extend(
+        f"Java does not support import aliases ({fqcn} as {alias}); use a normal import "
+        "or the fully-qualified type name"
+        for fqcn, alias in alias_imports
+    )
     common_types = {
         "List": "java.util.List",
         "Map": "java.util.Map",
