@@ -4533,6 +4533,8 @@ _JAVA_METHOD_CONTRACT = re.compile(
 
 def _reconcile_java_framework_http_contracts(output: dict[str, str]) -> None:
     """Normalize framework-specific HTTP factories without crossing stacks."""
+    from .validation_orchestration import _normalize_jaxrs_uri_assignments
+
     for path, content in list(output.items()):
         if not path.casefold().endswith(".java") or not isinstance(content, str):
             continue
@@ -4547,6 +4549,7 @@ def _reconcile_java_framework_http_contracts(output: dict[str, str]) -> None:
                 "jakarta.ws.rs.core.UriBuilder.fromPath(",
                 content,
             )
+            content = _normalize_jaxrs_uri_assignments(content)
         output[path] = content
 
 

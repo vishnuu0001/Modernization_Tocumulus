@@ -446,6 +446,23 @@ public class CustomerController {
         self.assertFalse(result.passed)
         self.assertIn("Response has no locationBuilder", "\n".join(result.diagnostics))
 
+    def test_java_preflight_rejects_uri_builder_result_assigned_to_string(self):
+        source = """
+package demo;
+import jakarta.ws.rs.core.Response;
+import jakarta.ws.rs.core.UriBuilder;
+public class TransactionController {
+    Response create(Long id) {
+        UriBuilder builder = UriBuilder.fromPath("/api/transaction/{id}");
+        String location = builder.build(id);
+        return Response.created(builder.build(id)).build();
+    }
+}
+"""
+        result = validate_file("TransactionController.java", source, "java")
+        self.assertFalse(result.passed)
+        self.assertIn("returns java.net.URI, not String", "\n".join(result.diagnostics))
+
     def test_java_single_file_preflight_rejects_split_blank_final_constructors(self):
         source = """
 package demo;

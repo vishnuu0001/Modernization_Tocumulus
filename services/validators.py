@@ -1286,6 +1286,24 @@ def _jakarta_ws_rs_semantic_diagnostics(content: str) -> list[str]:
             "jakarta.ws.rs.core.Response has no notFound(...) factory; "
             "use Response.status(Response.Status.NOT_FOUND).build()"
         )
+    uri_builder_variables = set(re.findall(
+        r"\bUriBuilder\s+([A-Za-z_$][\w$]*)\s*=", content,
+    ))
+    string_build_assignments = re.findall(
+        r"(?m)^\s*String\s+[A-Za-z_$][\w$]*\s*=\s*([^;\r\n]*\.build\s*\([^;\r\n]*\))\s*;",
+        content,
+    )
+    if any(
+        "UriBuilder" in expression or any(
+            re.search(rf"\b{re.escape(builder)}\s*\.\s*build\s*\(", expression)
+            for builder in uri_builder_variables
+        )
+        for expression in string_build_assignments
+    ):
+        diagnostics.append(
+            "jakarta.ws.rs.core.UriBuilder.build(...) returns java.net.URI, not String; "
+            "declare the value as URI and pass it to Response.created/location"
+        )
     return diagnostics
 
 

@@ -816,6 +816,51 @@ def _normalize_java_import_aliases(content: str) -> str:
     return repaired
 
 
+_JAXRS_URI_STRING_ASSIGNMENT = re.compile(
+    r"(?m)^(?P<indent>[ \t]*)String\s+(?P<name>[A-Za-z_$][\w$]*)\s*=\s*"
+    r"(?P<expression>[^;\r\n]*\.build\s*\([^;\r\n]*\))\s*;"
+)
+
+
+def _normalize_jaxrs_uri_assignments(content: str) -> str:
+    """Correct unambiguous UriBuilder.build() assignments typed as String.
+
+    JAX-RS ``UriBuilder.build`` returns ``java.net.URI``. Only rewrite an
+    unused intermediate or one passed to ``Response.location/created``;
+    variables used as text remain untouched so business string behavior is
+    never guessed or changed.
+    """
+    if "UriBuilder" not in content or "String" not in content or ".build" not in content:
+        return content
+    builder_variables = set(re.findall(
+        r"\bUriBuilder\s+([A-Za-z_$][\w$]*)\s*=", content,
+    ))
+
+    def replace(match: re.Match) -> str:
+        name = match.group("name")
+        expression = match.group("expression")
+        is_uri_builder = "UriBuilder" in expression or any(
+            re.search(rf"\b{re.escape(builder)}\s*\.\s*build\s*\(", expression)
+            for builder in builder_variables
+        )
+        if not is_uri_builder:
+            return match.group(0)
+        outside = content[:match.start()] + content[match.end():]
+        references = list(re.finditer(rf"(?<!\.)\b{re.escape(name)}\b", outside))
+        response_use = re.search(
+            rf"\b(?:Response\.created|\.location)\s*\(\s*{re.escape(name)}\s*\)",
+            outside,
+        )
+        if references and not response_use:
+            return match.group(0)
+        return (
+            f"{match.group('indent')}java.net.URI {name} = "
+            f"{expression};"
+        )
+
+    return _JAXRS_URI_STRING_ASSIGNMENT.sub(replace, content)
+
+
 # Function: _single_file_extension
 def _single_file_extension(language: str, content: str) -> str:
     """Choose the compiler-facing extension for standalone generated source.
@@ -1161,6 +1206,7 @@ def _generate_validated(
     if language == "java":
         content = _normalize_jakarta_namespace(content)
         content = _normalize_java_import_aliases(content)
+        content = _normalize_jaxrs_uri_assignments(content)
         logger.info(
             "Java generation timing path=%s attempt=1 inference=%.3fs prompt_chars=%d output_chars=%d",
             rel_path, time.monotonic() - inference_started, len(prompt), len(content),
@@ -1278,7 +1324,8 @@ def _generate_validated(
                 "not invent method aliases or all-args constructors. Map DTO properties through "
                 "existing no-arg constructors and setters. For Jakarta JAX-RS use its Response "
                 "factories (for example Response.status(Response.Status.NOT_FOUND)); do not copy "
-                "Spring or convenience factories from another framework.\n"
+                "Spring or convenience factories from another framework. UriBuilder.build(...) "
+                "returns java.net.URI, never String; pass that URI to Response.created/location.\n"
             )
         if validation_language == "sql":
             effective_sql_dialect = (
@@ -1500,6 +1547,7 @@ def _generate_validated(
         if language == "java":
             content = _normalize_jakarta_namespace(content)
             content = _normalize_java_import_aliases(content)
+            content = _normalize_jaxrs_uri_assignments(content)
             logger.info(
                 "Java generation timing path=%s attempt=%d inference=%.3fs prompt_chars=%d output_chars=%d",
                 rel_path, attempt, time.monotonic() - inference_started, len(fix_prompt), len(content),

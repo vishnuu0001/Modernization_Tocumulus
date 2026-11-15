@@ -185,6 +185,32 @@ class JavaGenerationCapabilityMatrixTests(unittest.TestCase):
         self.assertIn("jakarta.ws.rs.core.UriBuilder.fromPath", controller)
         self.assertNotIn("Response.locationBuilder", controller)
 
+    def test_quarkus_reconciliation_retypes_uri_builder_intermediate(self):
+        path = "Demo/backend/transaction-service/src/main/java/com/app/transaction/TransactionController.java"
+        output = {path: (
+            "package com.app.transaction;\n"
+            "import jakarta.ws.rs.core.Response;\n"
+            "import jakarta.ws.rs.core.UriBuilder;\n"
+            "public class TransactionController {\n"
+            " Response create(Long id) {\n"
+            "  UriBuilder uriBuilder = UriBuilder.fromPath(\"/api/transaction/{id}\");\n"
+            "  String location = uriBuilder.build(id);\n"
+            "  return Response.status(Response.Status.CREATED)"
+            ".location(uriBuilder.build(id)).build();\n"
+            " }\n}\n"
+        )}
+
+        _reconcile_java_generation_output(
+            output, "Demo", {"backend_tech": "Java 21 Quarkus", "db_target": "postgres"},
+        )
+
+        controller = next(
+            content for content in output.values()
+            if isinstance(content, str) and "class TransactionController" in content
+        )
+        self.assertIn("java.net.URI location = uriBuilder.build(id);", controller)
+        self.assertNotIn("String location", controller)
+
     def test_quarkus_reconciliation_replaces_active_record_controller_in_repository_module(self):
         root = "Demo/backend/auth-service/src/main/java/com/comshashi/auth"
         controller_path = f"{root}/controller/AuthController.java"

@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 from services.modernizer.validation_orchestration import (
     _clean_generated_content, _generate_validated, _normalize_jakarta_namespace,
+    _normalize_jaxrs_uri_assignments,
 )
 from services.validators import ValidationResult
 
@@ -102,6 +103,42 @@ class NormalizeJakartaNamespaceTests(unittest.TestCase):
             "import javax.management.MBeanServer;\n"
         )
         self.assertEqual(_normalize_jakarta_namespace(content), content)
+
+
+class NormalizeJaxrsUriAssignmentTests(unittest.TestCase):
+    def test_retypes_unused_uri_builder_result_without_changing_location_call(self):
+        content = (
+            "UriBuilder uriBuilder = UriBuilder.fromPath(\"/api/transaction/{id}\");\n"
+            "String location = uriBuilder.build(created.getId());\n"
+            "return Response.status(Response.Status.CREATED).entity(created)"
+            ".location(uriBuilder.build(created.getId())).build();\n"
+        )
+
+        normalized = _normalize_jaxrs_uri_assignments(content)
+
+        self.assertIn("java.net.URI location = uriBuilder.build(created.getId());", normalized)
+        self.assertIn(".location(uriBuilder.build(created.getId()))", normalized)
+        self.assertNotIn("String location", normalized)
+
+    def test_retypes_uri_consumed_by_response_location(self):
+        content = (
+            "String location = jakarta.ws.rs.core.UriBuilder.fromPath(\"/api/items/{id}\")"
+            ".build(id);\n"
+            "return Response.created(location).build();\n"
+        )
+
+        normalized = _normalize_jaxrs_uri_assignments(content)
+
+        self.assertIn("java.net.URI location", normalized)
+        self.assertIn("Response.created(location)", normalized)
+
+    def test_preserves_string_when_builder_result_is_used_as_business_text(self):
+        content = (
+            "UriBuilder uriBuilder = UriBuilder.fromPath(\"/api/items/{id}\");\n"
+            "String location = uriBuilder.build(id);\n"
+            "return location + \"?view=compact\";\n"
+        )
+        self.assertEqual(content, _normalize_jaxrs_uri_assignments(content))
 
 
 class JavaDomainGenerationConvergenceTests(unittest.TestCase):
@@ -327,6 +364,8 @@ class JavaDomainGeneratorTimeBudgetTests(unittest.TestCase):
                 self.assertIn("void delete(Long)", prompt)
                 self.assertIn("do not invent aliases", prompt)
                 self.assertIn("Use Auth directly for request bodies", prompt)
+                if builder is _java_controller_prompt_quarkus:
+                    self.assertIn("UriBuilder.build(...) returns java.net.URI, never String", prompt)
 
     def test_quarkus_domain_generation_rejects_active_record_controller_drift(self):
         from services.modernizer.domain_generators.java import _llm_domain_java
