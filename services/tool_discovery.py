@@ -19,7 +19,9 @@ _WINDOWS_TOOL_PATTERNS = {
     "gofmt": (r"C:\msys64\ucrt64\bin\gofmt.exe",),
     "rustc": (r"C:\Program Files\Rust stable MSVC *\bin\rustc.exe",),
     "cargo": (r"C:\Program Files\Rust stable MSVC *\bin\cargo.exe",),
-    "gradle": (r"C:\msys64\ucrt64\bin\gradle.bat", r"C:\Tools\gradle-*\bin\gradle.bat"),
+    # Prefer a supported standalone distribution over legacy MSYS launchers,
+    # which can contain a machine-specific, stale JAVA_HOME assignment.
+    "gradle": (r"C:\Tools\gradle-*\bin\gradle.bat", r"C:\msys64\ucrt64\bin\gradle.bat"),
     "sbt": (r"C:\msys64\ucrt64\bin\sbt.bat", r"C:\Program Files\sbt\bin\sbt.bat", r"C:\Program Files (x86)\sbt\bin\sbt.bat"),
     "composer": (
         r"C:\msys64\ucrt64\bin\composer.bat",
@@ -77,9 +79,18 @@ _WINDOWS_TOOL_PATTERNS = {
         r"C:\Program Files\Clojure\clojure.cmd",
         r"C:\Program Files\Clojure\bin\clojure.bat",
     ),
-    "elixirc": (r"C:\Tools\Elixir-*-otp-*\bin\elixirc.bat",),
-    "elixir": (r"C:\Tools\Elixir-*-otp-*\bin\elixir.bat",),
-    "mix": (r"C:\Tools\Elixir-*-otp-*\bin\mix.bat",),
+    "elixirc": (
+        r"C:\Program Files\Elixir\bin\elixirc.bat",
+        r"C:\Tools\Elixir-*-otp-*\bin\elixirc.bat",
+    ),
+    "elixir": (
+        r"C:\Program Files\Elixir\bin\elixir.bat",
+        r"C:\Tools\Elixir-*-otp-*\bin\elixir.bat",
+    ),
+    "mix": (
+        r"C:\Program Files\Elixir\bin\mix.bat",
+        r"C:\Tools\Elixir-*-otp-*\bin\mix.bat",
+    ),
 }
 
 _ERLANG_TOOLS = {"elixir.bat", "elixirc.bat", "mix.bat"}

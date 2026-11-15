@@ -742,6 +742,12 @@ def _validate_python(rel_path: str, content: str, tmp_dir: Path) -> ValidationRe
 def _validate_external_language(
     rel_path: str, content: str, language: str, tmp_dir: Path,
 ) -> ValidationResult:
+    # ``mix.exs`` is executable project configuration, not a standalone
+    # module that elixirc can compile outside a started Mix application.
+    # Full-project validation runs Mix with dependencies; the single-file
+    # gate must use the strict Elixir grammar parser here.
+    if language == "elixir" and Path(rel_path).name.casefold() == "mix.exs":
+        return _validate_tree_sitter(rel_path, content, language)
     commands, argument_template = _EXTERNAL_VALIDATORS[language]
     executable = next((find_executable(command) for command in commands if find_executable(command)), None)
     if not executable:
@@ -804,6 +810,10 @@ def _validate_external_language(
             # diagnostic; the strict grammar parser remains authoritative.
             "bad constant pool index",
             "scala.reflect.internal.fatalerror",
+            # Restricted Windows service identities can start swiftc but may
+            # not execute its child swift-frontend binary. That is a host
+            # boundary rather than a generated-source diagnostic.
+            "permission denied",
         )
     )
     if failed and infrastructure_failure and language in _TREE_SITTER_LANGUAGES:
@@ -816,6 +826,8 @@ def _validate_external_language(
             "not found: object", "not found: type", "package does not exist",
             "cannot find symbol", "unresolved module or unlinked crate",
             "unresolved import", "use of unresolved module",
+            "is not loaded and could not be found",
+            "target of uri doesn't exist",
         )
     )
     if failed and dependency_failure and language in _TREE_SITTER_LANGUAGES:

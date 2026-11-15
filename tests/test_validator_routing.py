@@ -18,6 +18,7 @@ from services.validators import (
     _validate_cobol,
     _validate_command,
     _validate_csharp,
+    _validate_external_language,
     _validate_java,
     _validate_sql,
     _validate_typescript,
@@ -28,6 +29,38 @@ from services.modernizer.target_config import TARGET_STACKS
 
 
 class ValidatorRoutingTests(unittest.TestCase):
+    def test_framework_dependency_diagnostics_fall_back_to_strict_parser(self):
+        cases = (
+            ("dart", "main.dart", "void main() {}", "Target of URI doesn't exist: package:flutter/material.dart"),
+            ("elixir", "router.ex", "defmodule Demo.Router do\nend\n", "module Phoenix.Router is not loaded and could not be found"),
+        )
+        for language, path, source, diagnostic in cases:
+            with self.subTest(language=language), tempfile.TemporaryDirectory() as directory, patch(
+                "services.validators.find_executable", return_value=f"{language}.exe",
+            ), patch(
+                "services.validators.subprocess.run",
+                return_value=subprocess.CompletedProcess([], 1, "", diagnostic),
+            ):
+                result = _validate_external_language(
+                    path, source, language, Path(directory),
+                )
+
+            self.assertTrue(result.passed, result.diagnostics)
+            self.assertEqual("parser", result.checker)
+
+    def test_mix_manifest_uses_parser_without_starting_mix_runtime(self):
+        source = "defmodule Demo.MixProject do\n  use Mix.Project\n  def project, do: [app: :demo]\nend\n"
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "services.validators.subprocess.run",
+        ) as run:
+            result = _validate_external_language(
+                "mix.exs", source, "elixir", Path(directory),
+            )
+
+        self.assertTrue(result.passed, result.diagnostics)
+        self.assertEqual("parser", result.checker)
+        run.assert_not_called()
+
     def test_inaccessible_optional_compiler_falls_back_to_strict_parser(self):
         with tempfile.TemporaryDirectory() as directory, patch(
             "services.validators._resolve_validator_command", return_value="php.exe",
