@@ -6,6 +6,7 @@
 import subprocess
 import unittest
 import tempfile
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -22,6 +23,7 @@ from services.validators import (
     _validate_java,
     _validate_sql,
     _validate_typescript,
+    _resolve_javac,
     detect_source_language,
     validate_file,
 )
@@ -29,6 +31,18 @@ from services.modernizer.target_config import TARGET_STACKS
 
 
 class ValidatorRoutingTests(unittest.TestCase):
+    def test_java_validator_prefers_java_home_toolchain_over_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = "javac.exe" if os.name == "nt" else "javac"
+            candidate = Path(directory) / "bin" / binary
+            candidate.parent.mkdir(parents=True)
+            candidate.write_text("", encoding="utf-8")
+            with patch.dict(os.environ, {"JAVA_HOME": directory}), patch(
+                "services.validators.find_executable", return_value="path-javac",
+            ):
+                resolved = _resolve_javac()
+        self.assertEqual(str(candidate), resolved)
+
     def test_framework_dependency_diagnostics_fall_back_to_strict_parser(self):
         cases = (
             ("dart", "main.dart", "void main() {}", "Target of URI doesn't exist: package:flutter/material.dart"),
@@ -392,6 +406,20 @@ public class ServiceImpl implements MissingService {
         source = "package demo; public class Broken { void run( { }"
         result = validate_file("Broken.java", source, "java")
         self.assertFalse(result.passed)
+
+    def test_csharp_preflight_rejects_multi_file_sentinel_with_actionable_diagnostic(self):
+        source = """
+namespace Demo;
+public interface IService {}
+// ===FILE===
+using System;
+namespace Demo;
+public class Service : IService {}
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            result = _validate_csharp("Service.cs", source, Path(directory))
+        self.assertFalse(result.passed)
+        self.assertIn("exactly one compilation unit", "\n".join(result.diagnostics))
 
     def test_java_preflight_rejects_nonexistent_jaxrs_response_factories(self):
         source = """

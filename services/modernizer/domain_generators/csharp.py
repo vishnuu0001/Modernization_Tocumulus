@@ -123,15 +123,18 @@ def _gen_csharp_service(files, base, domain, root_ns, context, prod_rules, sourc
             on_step(f"[{domain}] Generating Service implementation…")
         prompt = (
             f"{context}\n{prod_rules}{_source_fidelity_rules(source_sec)}\n\n"
-            f"Generate TWO C# files separated by the sentinel line '// ===FILE===':\n\n"
-            f"FILE 1: Interface I{domain}Service in namespace {root_ns}.{domain}Service.Services\n"
+            f"Generate ONE complete C# compilation unit for Services/{domain}ServiceImpl.cs.\n"
+            f"Use one using block before one namespace declaration; never restart the file, emit a second using block, "
+            f"or output a // ===FILE=== sentinel. The compilation unit must contain all of the following:\n\n"
+            f"1. Interface I{domain}Service in namespace {root_ns}.{domain}Service.Services\n"
             f"- Task<PagedResult<{domain}Response>> GetAllAsync(int page, int pageSize, CancellationToken ct)\n"
             f"- Task<{domain}Response?> GetByIdAsync(int id, CancellationToken ct)\n"
             f"- Task<{domain}Response> CreateAsync({domain}CreateRequest request, CancellationToken ct)\n"
             f"- Task<{domain}Response?> UpdateAsync(int id, {domain}UpdateRequest request, CancellationToken ct)\n"
             f"- Task<bool> DeleteAsync(int id, CancellationToken ct)\n"
-            f"- record PagedResult<T>(IReadOnlyList<T> Items, int TotalCount, int Page, int PageSize)\n\n"
-            f"FILE 2: {domain}ServiceImpl class in namespace {root_ns}.{domain}Service.Services\n"
+            f"2. record PagedResult<T>(IReadOnlyList<T> Items, int TotalCount, int Page, int PageSize)\n\n"
+            f"3. {domain}ServiceImpl class in the same namespace\n"
+            f"- Import {root_ns}.{domain}Service.Endpoints and {root_ns}.{domain}Service.Repositories for shared contracts\n"
             f"- Constructor injection of I{domain}Repository _repository and ILogger<{domain}ServiceImpl> _logger\n"
             f"- COMPLETE implementation of every method:\n"
             f"  * GetAllAsync: call repository, map to responses, return paged result with total count\n"
@@ -141,7 +144,7 @@ def _gen_csharp_service(files, base, domain, root_ns, context, prod_rules, sourc
             f"  * DeleteAsync: fetch existing, soft-delete (IsActive=false + UpdatedAt=DateTime.UtcNow), save, log warn, return bool\n"
             f"- All async methods use await, no .Result or .Wait() calls\n"
             f"- Try/catch with ILogger.LogError on unexpected exceptions, re-throw as domain exception\n"
-            f"Output ONLY the C# content. No markdown fences."
+            f"Output ONLY that single C# compilation unit. No markdown fences or file separators."
         )
         _rel = f"{base}/Services/{domain}ServiceImpl.cs"
         _content, _result, _attempts = _generate_validated(
@@ -174,12 +177,11 @@ def _gen_csharp_repository(
         if on_step:
             on_step(f"[{domain}] Generating Repository ({'Dapper' if is_dapper else 'EF Core'})…")
         is_postgres = db_target == "postgres"
-        dapper_ado_pkg = "Npgsql" if is_postgres else "Microsoft.Data.SqlClient"
         dapper_paging_hint = (
             "OFFSET/LIMIT" if is_postgres else "OFFSET/FETCH"
         )
         repo_impl_spec = (
-            f"FILE 2: {domain}Repository implementing I{domain}Repository using Dapper:\n"
+            f"3. {domain}Repository implementing I{domain}Repository using Dapper:\n"
             f"- Constructor injection of IDbConnectionFactory _connectionFactory (CreateConnection() returns IDbConnection)\n"
             f"- COMPLETE async implementations using Dapper's QueryAsync/QuerySingleOrDefaultAsync/ExecuteAsync\n"
             f"  against parameterized raw SQL (NEVER string-concatenated SQL) on the {domain} table\n"
@@ -187,31 +189,33 @@ def _gen_csharp_repository(
             f"only {'PostgreSQL' if is_postgres else 'T-SQL'} syntax; never mix in the other engine's syntax "
             f"(no {'T-SQL IDENTITY()/OUTPUT INSERTED/GETUTCDATE()' if is_postgres else 'PostgreSQL RETURNING/FOR UPDATE/NOW()'})\n"
             f"- GetPagedAsync uses a paginated SQL query ({dapper_paging_hint}) plus a separate COUNT(*) query for Total\n"
-            f"- Also include {domain}Entity class: Id, Name, IsActive, CreatedAt, UpdatedAt — plus domain-specific fields for {domain}\n"
+            f"- Use the {domain}Entity declared above; do not redeclare it\n"
             f"- IDbConnectionFactory interface: IDbConnection CreateConnection(), implemented with "
             f"{'Npgsql.NpgsqlConnection' if is_postgres else 'Microsoft.Data.SqlClient.SqlConnection'}\n"
-            f"- {domain}Service.csproj targeting {_target_dotnet_version(target)}, Dapper, {dapper_ado_pkg}, and validation NuGet packages "
-            f"(NO EntityFrameworkCore package reference)\n"
+            f"- Do not emit project XML; the deterministic scaffold owns the .csproj and dependencies\n"
         ) if is_dapper else (
-            f"FILE 2: {domain}Repository implementing I{domain}Repository using EF Core:\n"
+            f"3. {domain}Repository implementing I{domain}Repository using EF Core:\n"
             f"- Constructor injection of {root_ns}DbContext _context\n"
             f"- COMPLETE async implementations using _context.Set<{domain}Entity>()\n"
             f"- GetPagedAsync uses .Where(x => x.IsActive).Skip((page-1)*pageSize).Take(pageSize)\n"
-            f"- Also include {domain}Entity class: Id, Name, IsActive, CreatedAt, UpdatedAt — plus domain-specific fields for {domain}\n"
+            f"- Use the {domain}Entity declared above; do not redeclare it\n"
             f"- {root_ns}DbContext partial class with DbSet<{domain}Entity> {domain}s and OnModelCreating config\n"
-            f"- {domain}Service.csproj targeting {_target_dotnet_version(target)}, EF Core, and validation NuGet packages\n"
+            f"- Do not emit project XML; the deterministic scaffold owns the .csproj and dependencies\n"
         )
         prompt = (
             f"{context}\n{prod_rules}{_source_fidelity_rules(source_sec)}\n\n"
-            f"Generate TWO C# files separated by '// ===FILE===':\n\n"
-            f"FILE 1: I{domain}Repository interface in namespace {root_ns}.{domain}Service.Repositories\n"
+            f"Generate ONE complete C# compilation unit for Repositories/{domain}Repository.cs.\n"
+            f"Use one using block before one namespace declaration; never restart the file, emit a second using block, "
+            f"or output a // ===FILE=== sentinel. The compilation unit must contain all of the following:\n\n"
+            f"1. I{domain}Repository interface in namespace {root_ns}.{domain}Service.Repositories\n"
             f"- Task<({domain}Entity[] Items, int Total)> GetPagedAsync(int page, int pageSize, CancellationToken ct)\n"
             f"- Task<{domain}Entity?> GetByIdAsync(int id, CancellationToken ct)\n"
             f"- Task<{domain}Entity> AddAsync({domain}Entity entity, CancellationToken ct)\n"
             f"- Task<{domain}Entity> UpdateAsync({domain}Entity entity, CancellationToken ct)\n"
             f"- Task SaveChangesAsync(CancellationToken ct)\n\n"
+            f"2. {domain}Entity class in the same compilation unit\n"
             f"{repo_impl_spec}"
-            f"Output ONLY C# content. No markdown fences."
+            f"Output ONLY that single C# compilation unit. No markdown fences, project XML, or file separators."
         )
         _rel = f"{base}/Repositories/{domain}Repository.cs"
         _content, _result, _attempts = _generate_validated(

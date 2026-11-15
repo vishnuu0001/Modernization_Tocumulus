@@ -104,6 +104,12 @@ def _resolve_validator_command(executable: str) -> str | None:
 
 # Function: _resolve_javac
 def _resolve_javac() -> str | None:
+    java_home = os.getenv("JAVA_HOME")
+    if java_home:
+        binary = "javac.exe" if os.name == "nt" else "javac"
+        candidate = Path(java_home) / "bin" / binary
+        if candidate.is_file():
+            return str(candidate)
     return find_executable("javac")
 
 
@@ -1503,6 +1509,14 @@ _CS_NOISE_CODES = {"CS0246", "CS0234", "CS0103", "CS8805"}
 
 # Function: _validate_csharp
 def _validate_csharp(rel_path: str, content: str, tmp_dir: Path) -> ValidationResult:
+    if re.search(r"(?m)^\s*//\s*===FILE===\s*$", content):
+        return ValidationResult(
+            rel_path, "csharp", "compiler", False,
+            [
+                "C# generation returned multiple sentinel-separated files for one output path; "
+                "emit exactly one compilation unit with one using block and one namespace declaration"
+            ],
+        )
     if not _CSHARP_COMPILER_AVAILABLE:
         # Tree-sitter is a strict grammar parser, not the former brace-counting
         # heuristic. Roslyn remains preferred whenever the SDK is installed.
