@@ -319,6 +319,7 @@ class OllamaGenerationEnforcementTests(unittest.TestCase):
         self.assertIn("auth.api", prompt)
         self.assertIn("prefer under 180 lines", prompt)
         self.assertIn("null stub returns are forbidden", prompt)
+        self.assertIn("containing await must be declared async", prompt)
         self.assertNotIn("ORIGINAL USER REQUIREMENTS", prompt)
         self.assertNotIn("large React authentication page", prompt)
         self.assertTrue(generated.call_args.kwargs["forbid_jsx"])

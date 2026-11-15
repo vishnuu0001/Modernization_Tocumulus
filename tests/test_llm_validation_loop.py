@@ -17,6 +17,55 @@ from services.validators import ValidationResult
 
 
 class LlmValidationLoopTests(unittest.TestCase):
+    @patch("services.llm.generate")
+    def test_ts1308_transport_helpers_are_repaired_without_another_model_call(self, generate):
+        cases = (
+            (
+                "function declaration",
+                "function decode(response: Response): string {\n"
+                "  const text = await response.text();\n  return text;\n}\n",
+                "async function decode(response: Response): Promise<string>",
+            ),
+            (
+                "single-line function",
+                "function decode(response: Response): string { const text = await response.text(); return text; }\n",
+                "async function decode(response: Response): Promise<string>",
+            ),
+            (
+                "assigned arrow",
+                "const decode = (response: Response): string => {\n"
+                "  const text = await response.text();\n  return text;\n};\n",
+                "const decode = async (response: Response): Promise<string>",
+            ),
+            (
+                "class method",
+                "class Decoder {\n  decode(response: Response): string {\n"
+                "    const text = await response.text();\n    return text;\n  }\n}\n",
+                "async decode(response: Response): Promise<string>",
+            ),
+            (
+                "callback",
+                "const decodeAll = (responses: Response[]) => responses.map((response) => {\n"
+                "  const text = await response.text();\n  return text;\n});\n",
+                "responses.map(async (response) =>",
+            ),
+        )
+
+        for label, malformed, expected in cases:
+            with self.subTest(label=label):
+                generate.reset_mock()
+                generate.return_value = malformed
+                content, result, attempts = _generate_validated(
+                    "Generate a concise TypeScript response decoder",
+                    model="test-model", system="typescript", max_tokens=2048,
+                    num_ctx=4096, rel_path="frontend/src/api/train.service.ts",
+                    language="typescript", max_attempts=3, forbid_jsx=True,
+                )
+                self.assertTrue(result.passed, result.diagnostics)
+                self.assertIn(expected, content)
+                self.assertEqual(1, attempts)
+                generate.assert_called_once()
+
     def test_java_alias_import_normalization_uses_fqcn_on_simple_name_conflict(self):
         from services.modernizer.validation_orchestration import _normalize_java_import_aliases
 

@@ -131,7 +131,7 @@ _TS_CLASS_METHOD_ARROW_RE = re.compile(
 )
 _TS_CONST_ARROW_MISSING_RE = re.compile(
     r"(?m)^(?P<head>[ \t]*(?:export\s+)?const\s+[A-Za-z_$][\w$]*"
-    r"(?:\s*:\s*[^\r\n]+?)?\s*=(?!>)\s*"
+    r"(?:\s*:\s*[^\r\n]+?)?\s*=(?!>)(?![^\{\r\n]*=>)\s*"
     r"(?:async\s*)?\([^{}\r\n]*\)\s*(?::\s*[^={\r\n]+)?)\s*\{"
 )
 _TS_INVALID_DEFAULT_CONST_RE = re.compile(
@@ -232,6 +232,111 @@ def _repair_typescript_missing_arrows_from_diagnostics(content: str, diagnostics
         lines[index] = (
             line[:brace_column].rstrip() + " => " + line[brace_column:]
         )
+    return "".join(lines)
+
+
+def _repair_typescript_missing_async_from_diagnostics(content: str, diagnostics) -> str:
+    """Add ``async`` only to the function containing a compiler-proven TS1308.
+
+    Generated transport helpers occasionally await ``Response.text()`` inside
+    an otherwise valid function but omit the async modifier. Guessing from the
+    presence of ``await`` alone could alter an outer function containing a
+    nested async callback, so this repair requires the exact TS1308 line and
+    selects the nearest still-open function body above it.
+    """
+    lines = content.splitlines(keepends=True)
+    diagnostic_lines = sorted({
+        int(match.group(1))
+        for item in diagnostics or ()
+        if (match := re.search(r"\bline\s+(\d+):\d+:\s*TS1308\b", str(item)))
+    })
+    control_words = {"if", "for", "while", "switch", "catch", "with", "constructor"}
+
+    def promise_return_type(line: str) -> str:
+        def wrap(match: re.Match) -> str:
+            return_type = match.group("type").strip()
+            if return_type.startswith("Promise<"):
+                return match.group(0)
+            return f"{match.group('close')}: Promise<{return_type}>{match.group('tail')}"
+
+        return re.sub(
+            r"(?P<close>\)\s*):\s*(?P<type>[^=\{\r\n]+?)\s*(?P<tail>=>\s*\{|\{)",
+            wrap, line, count=1,
+        )
+
+    def add_async(line: str) -> str | None:
+        if re.search(r"\basync\s+function\b", line):
+            return None
+        if re.search(r"\bfunction\s+[A-Za-z_$][\w$]*", line):
+            return promise_return_type(re.sub(r"\bfunction\b", "async function", line, count=1))
+
+        implementation_arrow = list(re.finditer(r"=>\s*\{", line))
+        if implementation_arrow:
+            arrow = implementation_arrow[-1]
+            before_arrow = line[:arrow.start()]
+            assignment_candidates = [
+                match.start()
+                for match in re.finditer(r"(?<![=!<>])=(?!=|>)", before_arrow)
+            ]
+            assignment = assignment_candidates[-1] if assignment_candidates else -1
+            if assignment >= 0:
+                after_assignment = line[assignment + 1:arrow.start()]
+                if "=>" not in after_assignment and not re.match(r"\s*async\b", after_assignment):
+                    repaired = line[:assignment + 1] + " async" + line[assignment + 1:]
+                    return promise_return_type(repaired)
+            property_match = re.match(
+                r"(?P<head>\s*[A-Za-z_$][\w$]*\s*:\s*)(?!async\b)", line,
+            )
+            if property_match:
+                repaired = line[:property_match.end()] + "async " + line[property_match.end():]
+                return promise_return_type(repaired)
+            trimmed = before_arrow.rstrip()
+            callback_start = -1
+            if trimmed.endswith(")"):
+                depth = 0
+                for offset in range(len(trimmed) - 1, -1, -1):
+                    if trimmed[offset] == ")":
+                        depth += 1
+                    elif trimmed[offset] == "(":
+                        depth -= 1
+                        if depth == 0:
+                            callback_start = offset
+                            break
+            else:
+                callback_name = re.search(r"[A-Za-z_$][\w$]*$", trimmed)
+                if callback_name:
+                    callback_start = callback_name.start()
+            if callback_start >= 0 and not re.search(
+                r"\basync\s*$", trimmed[:callback_start], re.IGNORECASE,
+            ):
+                return line[:callback_start] + "async " + line[callback_start:]
+
+        method = re.match(
+            r"(?P<indent>\s*)(?P<mods>(?:(?:public|private|protected|static|override|readonly)\s+)*)"
+            r"(?P<name>[A-Za-z_$][\w$]*)\s*(?:<[^{}\r\n]+>)?\s*\([^{}\r\n]*\)"
+            r"\s*(?::\s*[^{}\r\n]+)?\s*\{",
+            line,
+        )
+        if method and method.group("name") not in control_words and "async" not in method.group("mods").split():
+            insert_at = method.start("name")
+            repaired = line[:insert_at] + "async " + line[insert_at:]
+            return promise_return_type(repaired)
+        return None
+
+    for line_number in diagnostic_lines:
+        await_index = line_number - 1
+        if not (0 <= await_index < len(lines)):
+            continue
+        for candidate_index in range(await_index, max(-1, await_index - 120), -1):
+            candidate = lines[candidate_index]
+            repaired_candidate = add_async(candidate)
+            if repaired_candidate is None:
+                continue
+            segment = "".join(lines[candidate_index:await_index + 1])
+            if candidate_index != await_index and segment.count("{") <= segment.count("}"):
+                continue
+            lines[candidate_index] = repaired_candidate
+            break
     return "".join(lines)
 
 
@@ -952,6 +1057,9 @@ def _generate_validated(
                 candidate = _repair_typescript_missing_arrows_from_diagnostics(
                     repaired, repaired_result.diagnostics,
                 )
+                candidate = _repair_typescript_missing_async_from_diagnostics(
+                    candidate, repaired_result.diagnostics,
+                )
                 candidate = _repair_typescript_malformed_default_export(
                     candidate, repaired_result.diagnostics, validation_path,
                 )
@@ -1117,6 +1225,9 @@ def _generate_validated(
                 "outside a JSX expression. Never combine declaration and arrow syntax: use "
                 "`function load() {}` or `const load = () => {}`, and use `load() {}` for a "
                 "class method; never emit `function load() => {}` or `load() => {}` as a method. "
+                "Every function, arrow, callback, or method whose body contains `await` must be "
+                "declared `async` and expose a Promise-compatible return type, including response "
+                "body/error decoding helpers. "
                 "Return one complete source file, never a markdown "
                 "fence or a filename header.\n"
             )
