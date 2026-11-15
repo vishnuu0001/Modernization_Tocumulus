@@ -1094,7 +1094,9 @@ def _generate_validated(
                 "an application service only: it must not access repositories or Kafka/event "
                 "publishers directly. DTOs, records, enums, and status types belong in their "
                 "own manifest files, never as private nested controller classes. Add every "
-                "required java.util/java.time/java.math import explicitly.\n"
+                "required java.util/java.time/java.math import explicitly. Never declare a "
+                "record that extends Exception, RuntimeException, Error, or any other class: "
+                "Java records cannot extend classes.\n"
             )
         if validation_language == "sql":
             effective_sql_dialect = (

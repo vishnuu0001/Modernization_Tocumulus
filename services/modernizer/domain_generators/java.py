@@ -230,7 +230,8 @@ def _llm_domain_java(
             f"- Never catch generic Exception or Throwable; let unexpected exceptions propagate to a "
             f"centralized @RestControllerAdvice — catch only the specific typed exceptions this method can "
             f"actually throw\n"
-            f"- Do not invent DTOs, mappers, service methods, exceptions, or unlisted types\n"
+            f"- Do not invent DTOs, mappers, service methods, exceptions, or unlisted types; never declare "
+            f"nested exception records/classes in the controller (a Java record cannot extend an exception)\n"
             f"- Emit exactly one public top-level class\n"
             f"Output ONLY the complete Java file. No markdown fences."
         )

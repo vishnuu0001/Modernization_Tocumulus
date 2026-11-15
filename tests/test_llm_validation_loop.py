@@ -141,6 +141,34 @@ class LlmValidationLoopTests(unittest.TestCase):
         self.assertIn("Never return null as a stub", repair_prompt)
         self.assertNotIn(stub.strip(), repair_prompt)
 
+    @patch("services.validators.validate_file")
+    @patch("services.llm.generate")
+    def test_guarded_nullable_transport_result_does_not_trigger_repair(self, generate, validate):
+        complete = (
+            "export async function findCustomer(id: string): Promise<Customer | null> {\n"
+            "  const response = await fetch(`/api/customers/${encodeURIComponent(id)}`);\n"
+            "  if (response.status === 404) return null;\n"
+            "  if (!response.ok) throw new Error(`Lookup failed: ${response.status}`);\n"
+            "  return response.json() as Promise<Customer>;\n"
+            "}\n"
+        )
+        generate.return_value = complete
+        validate.return_value = ValidationResult(
+            "frontend/CustomerService.ts", "typescript", "compiler", True, [],
+        )
+
+        content, result, attempts = _generate_validated(
+            "FILE CONTRACT: implement a nullable customer lookup",
+            model="test-model", system="typescript", max_tokens=2048, num_ctx=4096,
+            rel_path="frontend/CustomerService.ts", language="typescript",
+            max_attempts=3, forbid_jsx=True,
+        )
+
+        self.assertTrue(result.passed, result.diagnostics)
+        self.assertEqual(1, attempts)
+        self.assertEqual(complete, content)
+        generate.assert_called_once()
+
     @patch("services.llm.generate")
     def test_plain_ts_eof_parenthesis_failure_reauthors_complete_module(self, generate):
         from services.modernizer._shared import _TOKENS_XLARGE

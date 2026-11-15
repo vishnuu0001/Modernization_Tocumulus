@@ -282,6 +282,40 @@ class JavaStructuralDiagnosticRepairTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertEqual(("code", 0), _java_lexical_tail_state(output[path]))
 
+    def test_repairs_invalid_message_exception_records_without_touching_domain_records(self):
+        path = "Demo/src/main/java/com/example/AuthController.java"
+        output = {
+            path: (
+                "package com.example;\n"
+                "public class AuthController {\n"
+                "    record ResourceNotFoundException(String message) extends RuntimeException {}\n"
+                "    private record DuplicateKeyException(String message) extends RuntimeException {}\n"
+                "    record ServiceException(String message, Throwable cause) extends RuntimeException {}\n"
+                "    record AuditEvent(String action) {}\n"
+                "}\n"
+            ),
+        }
+
+        changed = _apply_deterministic_java_diagnostic_repairs(
+            output, {path: ["line 3: '{' expected", "line 4: '{' expected"]},
+        )
+
+        self.assertEqual({path}, changed)
+        repaired = output[path]
+        self.assertIn(
+            "private static final class ResourceNotFoundException extends RuntimeException",
+            repaired,
+        )
+        self.assertIn(
+            "private static final class DuplicateKeyException extends RuntimeException",
+            repaired,
+        )
+        self.assertEqual(2, repaired.count("super(message);"))
+        self.assertIn("super(message, cause);", repaired)
+        self.assertIn("record AuditEvent(String action) {}", repaired)
+        self.assertNotIn("record ResourceNotFoundException", repaired)
+        self.assertEqual(("code", 0), _java_lexical_tail_state(repaired))
+
     def test_compiler_blockers_are_distinct_from_follow_up_findings(self):
         self.assertTrue(_pf_java_has_blocking_source_diagnostics([
             "line 129: illegal start of expression",

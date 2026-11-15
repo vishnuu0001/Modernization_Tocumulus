@@ -187,19 +187,96 @@ def _allowed_jsx_null_return_lines(content: str, path: str) -> set[int]:
     return allowed
 
 
+_TS_NULLABLE_FUNCTION_PATTERNS = (
+    re.compile(
+        r"(?ms)(?:^|\n)[ \t]*(?:(?:export|default|public|private|protected|static|async)\s+)*"
+        r"(?:function\s+)?[A-Za-z_$][\w$]*\s*\([^;{}]*\)\s*:\s*"
+        r"(?P<return>[^\n{]+?)\s*\{"
+    ),
+    re.compile(
+        r"(?ms)(?:^|\n)[ \t]*(?:export\s+)?(?:const|let)\s+[A-Za-z_$][\w$]*"
+        r"(?:\s*:[^=\n]+)?\s*=\s*(?:async\s+)?\([^;{}]*\)\s*:\s*"
+        r"(?P<return>[^\n{]+?)\s*=>\s*\{"
+    ),
+)
+
+
+def _return_is_if_guarded(content: str, match: re.Match) -> bool:
+    """Return whether a null return is controlled by a local if branch."""
+    lines = content.splitlines()
+    line_number = content.count("\n", 0, match.start()) + 1
+    line_index = line_number - 1
+    line_start = content.rfind("\n", 0, match.start()) + 1
+    if re.search(r"\bif\s*\(", lines[line_index][:match.start() - line_start]):
+        return True
+    window_start = max(0, line_index - 8)
+    prior = lines[window_start:line_index]
+    nearest_open = next(
+        (index for index in range(len(prior) - 1, -1, -1) if "{" in prior[index]),
+        None,
+    )
+    if nearest_open is None:
+        return False
+    guard_text = "\n".join(prior[max(0, nearest_open - 5):])
+    return bool(re.search(r"(?s)\bif\s*\(.*\)\s*\{\s*$", guard_text))
+
+
+def _allowed_typed_nullable_null_return_lines(content: str, path: str) -> set[int]:
+    """Allow guarded null results promised by an explicit TypeScript type.
+
+    A transport lookup commonly maps an HTTP 404 to ``null`` under a declared
+    ``Promise<Entity | null>`` contract. That is a complete result branch, not
+    a placeholder. Keep the exemption narrow: plain TypeScript only, an
+    explicit nullable return annotation, an enclosing function body, and a
+    local ``if`` guard are all required. Unconditional/null-only functions
+    therefore continue to fail governance.
+    """
+    if PurePosixPath(path).suffix.casefold() != ".ts":
+        return set()
+    functions: list[tuple[int, bool]] = []
+    for pattern in _TS_NULLABLE_FUNCTION_PATTERNS:
+        for function_match in pattern.finditer(content):
+            return_type = function_match.group("return")
+            functions.append((
+                function_match.end() - 1,
+                bool(re.search(r"\bnull\b", return_type, re.IGNORECASE)),
+            ))
+    if not functions:
+        return set()
+
+    allowed: set[int] = set()
+    for match in re.finditer(r"(?im)\breturn\s+null\s*;?\s*(?://.*)?$", content):
+        if not _return_is_if_guarded(content, match):
+            continue
+        for body_open, is_nullable in sorted(functions, reverse=True):
+            if body_open >= match.start():
+                continue
+            # Braces inside expressions remain balanced; a positive depth at
+            # the return proves this candidate function has not closed yet.
+            body_prefix = content[body_open:match.start()]
+            if body_prefix.count("{") > body_prefix.count("}"):
+                if is_nullable:
+                    allowed.add(content.count("\n", 0, match.start()) + 1)
+                break
+    return allowed
+
+
 def _first_placeholder(content: str, path: str):
     allowed_pass_lines = (
         _allowed_python_noop_lines(content)
         if PurePosixPath(path).suffix.casefold() == ".py" else set()
     )
     allowed_jsx_null_lines = _allowed_jsx_null_return_lines(content, path)
+    allowed_typed_nullable_null_lines = _allowed_typed_nullable_null_return_lines(
+        content, path,
+    )
     for match in _PLACEHOLDER_RE.finditer(content):
         line = content.count("\n", 0, match.start()) + 1
         token = match.group(0).strip().split("#", 1)[0].strip()
         if token in {"pass", "..."} and line in allowed_pass_lines:
             continue
         if re.fullmatch(r"return\s+null\s*;?(?:\s*//.*)?", token, re.IGNORECASE) \
-                and line in allowed_jsx_null_lines:
+                and line in allowed_jsx_null_lines | allowed_typed_nullable_null_lines:
             continue
         return match
     return None

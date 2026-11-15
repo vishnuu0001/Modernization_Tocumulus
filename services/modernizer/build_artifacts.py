@@ -5863,6 +5863,13 @@ def _repair_java_structural_diagnostics(
         "java.lang.String", "java.time.LocalDate", "java.time.LocalDateTime",
         "java.math.BigDecimal", "java.util.Optional",
     )
+    invalid_exception_record = re.compile(
+        r"(?m)^(?P<indent>[ \t]*)(?P<access>public|protected|private)?[ \t]*"
+        r"record\s+(?P<name>[A-Za-z_$][\w$]*)\s*\(\s*String\s+message"
+        r"(?P<cause>\s*,\s*Throwable\s+cause)?\s*\)\s*"
+        r"extends\s+(?P<parent>(?:[A-Za-z_$][\w$]*\.)*"
+        r"[A-Za-z_$][\w$]*(?:Exception|Error))\s*\{\s*\}[ \t]*$"
+    )
     for path, diagnostics in errors_by_file.items():
         content = output.get(path)
         if not isinstance(content, str) or not path.casefold().endswith(".java"):
@@ -5870,6 +5877,34 @@ def _repair_java_structural_diagnostics(
         lowered = "\n".join(diagnostics).casefold()
         repaired = content
         restarted_unit = False
+
+        # Records are implicitly final subclasses of java.lang.Record and can
+        # never extend an exception. Local models nevertheless repeat this
+        # compact-looking invalid form after javac reports "'{' expected".
+        # Preserve its intended message-carrying exception behavior using the
+        # smallest legal class. The exact diagnostic and empty one-String
+        # record shape keep this repair isolated from valid domain records.
+        if "'{' expected" in lowered and "record" in repaired and "extends" in repaired:
+            def replace_exception_record(match: re.Match) -> str:
+                indent = match.group("indent")
+                access = match.group("access") or ("private" if indent else "")
+                static = " static" if indent else ""
+                prefix = f"{access}{static} final class".strip()
+                name = match.group("name")
+                parent = match.group("parent")
+                super_arguments = "message, cause" if match.group("cause") else "message"
+                constructor_parameters = (
+                    "String message, Throwable cause"
+                    if match.group("cause") else "String message"
+                )
+                return (
+                    f"{indent}{prefix} {name} extends {parent} {{\n"
+                    f"{indent}    {name}({constructor_parameters}) "
+                    f"{{ super({super_arguments}); }}\n"
+                    f"{indent}}}"
+                )
+
+            repaired = invalid_exception_record.sub(replace_exception_record, repaired)
 
         declarations = list(package_pattern.finditer(repaired))
         if len(declarations) > 1 and any(

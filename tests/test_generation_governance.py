@@ -656,6 +656,52 @@ def test_unconditional_react_null_and_typescript_service_null_remain_blocked():
     assert _first_placeholder(null_service, "frontend/UserService.ts") is not None
 
 
+def test_guarded_nullable_typescript_transport_result_is_not_a_placeholder():
+    from services.generation_governance import _first_placeholder
+
+    source = (
+        "export async function findCustomer(id: string): Promise<Customer | null> {\n"
+        "  const response = await fetch(`/api/customers/${encodeURIComponent(id)}`);\n"
+        "  if (response.status === 404) return null;\n"
+        "  if (!response.ok) throw new Error(`Lookup failed: ${response.status}`);\n"
+        "  return response.json() as Promise<Customer>;\n"
+        "}\n"
+    )
+
+    assert _first_placeholder(source, "frontend/CustomerService.ts") is None
+
+
+def test_nullable_annotation_does_not_allow_an_unconditional_typescript_stub():
+    from services.generation_governance import _first_placeholder
+
+    source = (
+        "export async function findCustomer(id: string): Promise<Customer | null> {\n"
+        "  return null;\n"
+        "}\n"
+    )
+
+    assert _first_placeholder(source, "frontend/CustomerService.ts") is not None
+
+
+def test_nullable_prior_function_does_not_exempt_later_nonnullable_null_stub():
+    from services.generation_governance import _first_placeholder
+
+    source = (
+        "export const findCustomer = async (id: string): Promise<Customer | null> => {\n"
+        "  if (!id) return null;\n"
+        "  return request(id);\n"
+        "};\n"
+        "export async function loadRequiredCustomer(): Promise<Customer> {\n"
+        "  if (cacheMiss()) return null;\n"
+        "  return request('required');\n"
+        "}\n"
+    )
+
+    placeholder = _first_placeholder(source, "frontend/CustomerService.ts")
+    assert placeholder is not None
+    assert source.count("\n", 0, placeholder.start()) + 1 == 6
+
+
 def test_single_file_generation_gives_every_validation_attempt_a_complete_budget():
     from services.modernizer._shared import _SINGLE_FILE_DRAFT_MAX_SECONDS
 

@@ -136,6 +136,34 @@ class JavaDomainGenerationConvergenceTests(unittest.TestCase):
         self.assertTrue(result.passed)
         self.assertEqual(1, attempts)
 
+    @patch("services.llm.generate")
+    def test_invalid_nested_exception_record_is_repaired_before_llm_retry(self, generate):
+        generated = (
+            "package com.comshashi.auth.controller;\n"
+            "public class AuthController {\n"
+            "    record ResourceNotFoundException(String message) extends RuntimeException {}\n"
+            "    record DuplicateKeyException(String message) extends RuntimeException {}\n"
+            "}\n"
+        )
+        generate.return_value = generated
+        path = (
+            "ModernizedApp/services/auth-service/src/main/java/"
+            "com/comshashi/auth/controller/AuthController.java"
+        )
+
+        content, result, attempts = _generate_validated(
+            "Generate AuthController", model="qwen3.5:9b", system="java",
+            max_tokens=2048, num_ctx=4096, rel_path=path, language="java",
+            max_attempts=3,
+        )
+
+        self.assertTrue(result.passed, result.diagnostics)
+        self.assertEqual(1, attempts)
+        self.assertEqual(1, generate.call_count)
+        self.assertNotIn("record ResourceNotFoundException", content)
+        self.assertIn("class ResourceNotFoundException extends RuntimeException", content)
+        self.assertEqual(2, content.count("super(message);"))
+
     def test_java_stops_early_when_repair_makes_no_progress(self):
         # Every generate() call returns different content, but validate_file
         # always reports the exact same diagnostics — the model is not
