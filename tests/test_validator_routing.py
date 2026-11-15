@@ -259,6 +259,34 @@ class ValidatorRoutingTests(unittest.TestCase):
                  patch("services.validators._SQLFLUFF_AVAILABLE", False):
                 self.assertFalse(_validate_sql("demo.sql", "SELECT 1;", "").passed)
 
+    def test_angular_parameter_decorators_use_generated_project_compiler_mode(self):
+        source = """
+import { Inject } from '@angular/core';
+import { DOCUMENT } from '@angular/common';
+export class SampleComponent {
+  constructor(@Inject(DOCUMENT) private readonly document: Document) {}
+}
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            result = _validate_typescript(
+                "ModernizedApp/frontend/src/app/features/sample/sample.component.ts",
+                source,
+                Path(directory),
+            )
+        self.assertTrue(result.passed, result.diagnostics)
+
+    def test_plain_typescript_does_not_silently_enable_parameter_decorators(self):
+        source = """
+declare const Inject: (token: string) => ParameterDecorator;
+export class PlainService {
+  constructor(@Inject('TOKEN') private readonly value: object) {}
+}
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            result = _validate_typescript("src/plain-service.ts", source, Path(directory))
+        self.assertFalse(result.passed)
+        self.assertIn("TS1206", "\n".join(result.diagnostics))
+
     # Function: test_csharp_survives_a_compiler_output_that_cant_be_decoded
     def test_csharp_survives_a_compiler_output_that_cant_be_decoded(self):
         """Regression test for a real production incident: a 9-hour Java

@@ -44,6 +44,8 @@ class FrameworkPromptQualityTests(unittest.TestCase):
         self.assertIn("Angular 20", prompt)
         self.assertIn("standalone: true", prompt)
         self.assertIn("signals/computed", prompt)
+        self.assertIn("inject(TOKEN) field initializers", prompt)
+        self.assertIn("do not use constructor parameter decorators", prompt)
         self.assertIn("Hello(bool isHappy)", prompt)
         self.assertIn("Do not invent business fields", prompt)
         self.assertNotIn("useEffect", prompt)

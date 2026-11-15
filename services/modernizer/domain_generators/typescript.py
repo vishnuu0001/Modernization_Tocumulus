@@ -47,6 +47,7 @@ def _ui_component_prompt(
             f"{context}\n{prod_rules}{guide_sec}{grounding}\n\n"
             f"Generate one complete, production-quality {angular_version} standalone component for the {domain} feature.\n"
             "- Use @Component({standalone: true}), ChangeDetectionStrategy.OnPush, inject(), signals/computed, and typed reactive forms.\n"
+            "- Prefer inject(TOKEN) field initializers; do not use constructor parameter decorators such as @Inject(DOCUMENT).\n"
             "- Import only real Angular APIs and the feature API service from the sibling .api file; never use React hooks, JSX, Vue APIs, or NgModules.\n"
             "- Provide a complete inline template with semantic HTML, labels, keyboard-accessible actions, and source-supported loading/empty/error/success states.\n"
             "- Keep network calls in the injected API service. The component owns view state, form validation, confirmation, and user feedback without duplicating transport logic.\n"
