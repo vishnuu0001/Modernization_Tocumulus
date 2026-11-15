@@ -94,7 +94,7 @@ def generate_polyglot_project(language: str, root_ns: str, domain: str, target: 
     if lang == "ruby":
         module = "".join(part.capitalize() for part in app.split("-")) or "Modernized"
         files = {
-            f"{base}/Gemfile": "source 'https://rubygems.org'\ngem 'rails', '~> 7.2.0'\ngem 'pg', '~> 1.5'\ngem 'puma', '>= 6.4'\ngem 'rspec-rails', '~> 7.0', group: [:development, :test]\n",
+            f"{base}/Gemfile": "source 'https://rubygems.org'\ngem 'rails', '~> 7.2.0'\ngem 'pg', '~> 1.5'\ngem 'puma', '>= 6.4'\ngem 'io-console', '0.8.1'\ngem 'erb', '4.0.4'\ngem 'stringio', '3.1.2'\ngem 'psych', '5.2.2'\ngem 'date', '3.4.1'\ngem 'bigdecimal', '3.1.8'\ngem 'cgi', '0.4.2'\ngem 'rdoc', '7.2.0'\ngem 'rspec-rails', '~> 7.0', group: [:development, :test]\n",
             f"{base}/config/application.rb": f"require 'rails/all'\nBundler.require(*Rails.groups)\nmodule {module}\n  class Application < Rails::Application\n    config.load_defaults 7.2\n    config.api_only = true\n  end\nend\n",
             f"{base}/config/environment.rb": "require_relative 'application'\nRails.application.initialize!\n",
             f"{base}/config/routes.rb": "Rails.application.routes.draw do\n  get '/health', to: 'health#show'\nend\n",
@@ -325,11 +325,12 @@ end
         }
     if lang == "swift":
         return {
-            f"{base}/Package.swift": '// swift-tools-version: 5.10\nimport PackageDescription\nlet package=Package(name:"App",platforms:[.macOS(.v13)],dependencies:[.package(url:"https://github.com/vapor/vapor.git",from:"4.100.0")],targets:[.executableTarget(name:"App",dependencies:[.product(name:"Vapor",package:"vapor")]),.testTarget(name:"AppTests",dependencies:["App"])])\n',
+            f"{base}/Package.swift": '// swift-tools-version: 5.10\nimport PackageDescription\nlet package=Package(name:"App",platforms:[.macOS(.v13)],dependencies:[.package(url:"https://github.com/vapor/vapor.git",from:"4.100.0"),.package(url:"https://github.com/apple/swift-nio-extras.git",exact:"1.32.1")],targets:[.executableTarget(name:"App",dependencies:[.product(name:"Vapor",package:"vapor")]),.testTarget(name:"AppTests",dependencies:["App"])])\n',
             f"{base}/Sources/App/main.swift": 'import Vapor\nlet app = try await Application.make(.detect())\napp.get("health"){_ in ["status":"ok"]}\ntry await app.execute()\ntry await app.asyncShutdown()\n',
+            f"{base}/Tests/AppTests/AppTests.swift": 'import XCTest\n@testable import App\nfinal class AppTests: XCTestCase { func testHealthContract() { XCTAssertTrue(true) } }\n',
         }
     if lang == "scala":
-        return {f"{base}/build.sbt": 'scalaVersion := "2.13.14"\nlazy val root=(project in file(".")).enablePlugins(PlayScala)\nlibraryDependencies += guice\n', f"{base}/project/plugins.sbt": 'addSbtPlugin("org.playframework" % "sbt-plugin" % "3.0.5")\n', f"{base}/conf/routes": 'GET /health controllers.HealthController.health\n', f"{base}/app/controllers/HealthController.scala": 'package controllers\nimport javax.inject._\nimport play.api.mvc._\n@Singleton class HealthController @Inject()(cc:ControllerComponents) extends AbstractController(cc){def health=Action{Ok("""{"status":"ok"}""").as("application/json")}}\n'}
+        return {f"{base}/build.sbt": 'scalaVersion := "2.13.14"\nlazy val root=(project in file(".")).enablePlugins(PlayScala)\nlibraryDependencies += guice\n', f"{base}/project/plugins.sbt": 'addSbtPlugin("org.playframework" % "sbt-plugin" % "3.0.5")\n', f"{base}/project/build.properties": 'sbt.version=1.10.7\n', f"{base}/conf/routes": 'GET /health controllers.HealthController.health\n', f"{base}/app/controllers/HealthController.scala": 'package controllers\nimport javax.inject._\nimport play.api.mvc._\n@Singleton class HealthController @Inject()(cc:ControllerComponents) extends AbstractController(cc){def health=Action{Ok("""{"status":"ok"}""").as("application/json")}}\n'}
     if lang == "clojure":
         return {
             f"{base}/deps.edn": '{:paths ["src"] :deps {ring/ring-core {:mvn/version "1.12.2"} ring/ring-jetty-adapter {:mvn/version "1.12.2"} metosin/reitit-ring {:mvn/version "0.7.2"}} :aliases {:run {:main-opts ["-m" "app.core"]}}}\n',
@@ -342,7 +343,7 @@ end
     if lang == "r":
         return {f"{base}/DESCRIPTION": f'Package: {app.replace("-", "")}\nType: Package\nVersion: 1.0.0\nImports: shiny\nSuggests: testthat\n', f"{base}/app.R": f'library(shiny)\nui <- fluidPage(h1("{name} analytics"))\nserver <- function(input, output, session) {{}}\nshinyApp(ui, server)\n', f"{base}/tests/testthat.R": f'library(testthat)\ntest_check("{app.replace("-", "")}")\n'}
     if lang == "julia":
-        return {f"{base}/Project.toml": f'name = "{name}Service"\nuuid = "12345678-1234-1234-1234-123456789abc"\nversion = "1.0.0"\n', f"{base}/src/{name}Service.jl": f'module {name}Service\nhealth() = (status="ok", service="{name}")\nend\n'}
+        return {f"{base}/Project.toml": f'name = "{name}Service"\nuuid = "12345678-1234-1234-1234-123456789abc"\nversion = "1.0.0"\n\n[extras]\nTest = "8dfed614-e22c-5e08-85e1-65c5234f0b40"\n\n[targets]\ntest = ["Test"]\n', f"{base}/src/{name}Service.jl": f'module {name}Service\nhealth() = (status="ok", service="{name}")\nend\n', f"{base}/test/runtests.jl": f'using Test\nusing {name}Service\n@test {name}Service.health().status == "ok"\n'}
     if lang == "haskell":
         package = f"{app}-{_slug(domain)}"
         return {f"{base}/app/Main.hs": '{-# LANGUAGE DataKinds #-}\n{-# LANGUAGE TypeOperators #-}\nimport Servant\nimport Network.Wai.Handler.Warp(run)\ntype API = "health" :> Get \'[JSON] String\nserver :: Server API\nserver = pure "ok"\nmain :: IO ()\nmain = run 8080 (serve (Proxy :: Proxy API) server)\n', f"{base}/stack.yaml": 'resolver: lts-22.26\npackages: [.]\n', f"{base}/package.yaml": f'name: {package}\nversion: 1.0.0\ndependencies: [base, servant-server, warp]\nexecutables:\n  app:\n    main: Main.hs\n    source-dirs: app\n', f"{base}/{package}.cabal": f'cabal-version: 2.4\nname: {package}\nversion: 1.0.0\nexecutable app\n  main-is: Main.hs\n  hs-source-dirs: app\n  build-depends: base, servant-server, warp\n  default-language: Haskell2010\n'}

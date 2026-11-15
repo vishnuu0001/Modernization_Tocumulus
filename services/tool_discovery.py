@@ -104,13 +104,26 @@ def _prepend_path(environment: dict[str, str], directory: str) -> None:
     environment["PATH"] = directory + os.pathsep + environment.get("PATH", "")
 
 
-def _configure_swift(environment: dict[str, str], _executable: Path) -> None:
+def _configure_swift(environment: dict[str, str], executable: Path) -> None:
     runtime_pattern = os.path.expandvars(
         r"%LOCALAPPDATA%\Programs\Swift\Runtimes\*\usr\bin",
     )
     runtimes = sorted(glob.glob(runtime_pattern), reverse=True)
     if runtimes:
         _prepend_path(environment, runtimes[0])
+    try:
+        install_root = executable.parents[4]
+        version = executable.parents[2].name.split("+", 1)[0]
+        developer_dir = install_root / "Platforms" / version / "Windows.platform" / "Developer"
+        sdk_root = developer_dir / "SDKs" / "Windows.sdk"
+        if sdk_root.is_dir():
+            environment["SDKROOT"] = str(sdk_root)
+            environment["DEVELOPER_DIR"] = str(developer_dir)
+            environment["GIT_CONFIG_COUNT"] = "1"
+            environment["GIT_CONFIG_KEY_0"] = "core.symlinks"
+            environment["GIT_CONFIG_VALUE_0"] = "false"
+    except IndexError:
+        pass
 
 
 def _configure_erlang(environment: dict[str, str], _executable: Path) -> None:
@@ -146,6 +159,29 @@ def _configure_rust(environment: dict[str, str], executable: Path) -> None:
         _prepend_path(environment, str(executable.parent))
 
 
+def _configure_ruby(environment: dict[str, str], executable: Path) -> None:
+    # RubyInstaller/MSYS2 native gems need both the UCRT compiler directory and
+    # MSYS make.  A different `make.exe` earlier on PATH (for example Free
+    # Pascal's) accepts extconf but cannot resolve MSYS paths such as /C/msys64.
+    path_text = str(executable).casefold()
+    if "msys64" in path_text:
+        parts = list(executable.parents)
+        msys_root = next((parent for parent in parts if parent.name.casefold() == "msys64"), None)
+        if msys_root:
+            msys_bin = msys_root / "usr" / "bin"
+            if msys_bin.is_dir():
+                _prepend_path(environment, str(msys_bin))
+            compiler_bin = msys_root / "ucrt64" / "bin"
+            if compiler_bin.is_dir():
+                _prepend_path(environment, str(compiler_bin))
+    else:
+        ruby_home = executable.parent.parent
+        compiler_bin = ruby_home / "msys64" / "ucrt64" / "bin"
+        if compiler_bin.is_dir():
+            _prepend_path(environment, str(compiler_bin))
+    _prepend_path(environment, str(executable.parent))
+
+
 def _configure_r(environment: dict[str, str], executable: Path) -> None:
     _configure_msys_tool(environment, executable, "R_HOME", Path("lib") / "R")
 
@@ -171,10 +207,14 @@ def _configure_java(environment: dict[str, str], _executable: Path) -> None:
 
 _ENVIRONMENT_HANDLERS = {
     "swiftc.exe": _configure_swift,
+    "swift.exe": _configure_swift,
     "cobc.exe": _configure_cobol,
     "go.exe": _configure_go,
     "cargo.exe": _configure_rust,
     "rustc.exe": _configure_rust,
+    "bundle.cmd": _configure_ruby,
+    "bundle.bat": _configure_ruby,
+    "bundle": _configure_ruby,
     "rscript.exe": _configure_r,
     **dict.fromkeys(_ERLANG_TOOLS, _configure_erlang),
     **dict.fromkeys(_JAVA_TOOLS, _configure_java),

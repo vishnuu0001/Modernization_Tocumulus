@@ -28,7 +28,19 @@ from services.modernizer.prompt_pipeline import (
     _pf_resolve_target,
 )
 from services.modernizer.scaffolds.polyglot import generate_polyglot_project
+from services.modernizer.scaffolds.single_file_templates import _template_from_prompt
 from services.validators import validate_file
+
+
+_ARTIFACT_FILENAMES = {
+    "yaml_artifact": "config.yaml", "json_artifact": "artifact.json",
+    "toml_artifact": "config.toml", "xml_artifact": "artifact.xml",
+    "markdown_artifact": "README.md", "graphql_schema": "schema.graphql",
+    "protobuf_schema": "schema.proto", "dockerfile_artifact": "Dockerfile",
+    "kubernetes_manifest": "deployment.yaml", "helm_chart": "values.yaml",
+    "cloudformation_template": "template.yaml", "ansible_playbook": "playbook.yaml",
+    "jenkins_pipeline": "Jenkinsfile", "github_actions": ".github/workflows/ci.yml",
+}
 
 
 def _prompt(stack: dict) -> str:
@@ -151,11 +163,17 @@ def run_matrix(
                         "production generation did not reach its validated terminal state"
                     )
             else:
-                files = generate_polyglot_project(language, "PromptMatrix", "Orders", target)
-                if not files and stack["full_generation"]:
-                    files = _generate_project(
-                        target, _signals, language, prompt, _full_stack,
-                    )
+                artifact_filename = _ARTIFACT_FILENAMES.get(stack_id)
+                if artifact_filename:
+                    files = {artifact_filename: _template_from_prompt(
+                        artifact_filename, prompt, target, "PromptMatrix",
+                    )}
+                else:
+                    files = generate_polyglot_project(language, "PromptMatrix", "Orders", target)
+                    if not files and stack["full_generation"]:
+                        files = _generate_project(
+                            target, _signals, language, prompt, _full_stack,
+                        )
             if not files:
                 raise RuntimeError(
                     f"no deterministic project scaffold for resolved language {language!r}"

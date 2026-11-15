@@ -33,6 +33,7 @@ from services.build_runner import (
     _run_sql_project_build,
     _run_npm_subprocess_with_retry,
     _run_process_tree,
+    _run_swift_build,
     _run_maven_build,
     _run_dotnet_build,
     _run_artifact_project_build,
@@ -42,6 +43,42 @@ from services.build_runner import (
 
 
 class BuildRunnerIntegrityTests(unittest.TestCase):
+    def test_windows_swift_build_uses_supported_linux_vapor_boundary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            (project / "Package.swift").write_text(
+                "// swift-tools-version: 5.10\n", encoding="utf-8",
+            )
+            completed = subprocess.CompletedProcess([], 0, "Build complete", "")
+            with (
+                patch("services.build_runner.os.name", "nt"),
+                patch("services.build_runner._which", return_value="docker.exe"),
+                patch("services.build_runner.executable_environment", return_value={}),
+                patch("services.build_runner._run_process_tree", return_value=completed) as run,
+            ):
+                result = _run_swift_build(project)
+
+        self.assertTrue(result.passed)
+        self.assertEqual("swift-docker-build", result.checker)
+        command = run.call_args.args[0]
+        self.assertEqual("docker.exe", command[0])
+        self.assertIn("swift:6.2-noble", command)
+        self.assertEqual(["swift", "test"], command[-2:])
+
+    def test_msys_ruby_environment_prioritizes_native_compiler_and_make(self):
+        from services.tool_discovery import executable_environment
+
+        executable = Path(r"C:\msys64\ucrt64\bin\bundle")
+        with patch("services.tool_discovery.os.name", "nt"), patch.dict(
+            "services.tool_discovery.os.environ", {"PATH": r"C:\FPC\bin"}, clear=True,
+        ), patch.object(Path, "is_dir", return_value=True):
+            environment = executable_environment(str(executable))
+
+        path_parts = environment["PATH"].split(os.pathsep)
+        self.assertEqual(str(executable.parent), path_parts[0])
+        self.assertLess(path_parts.index(r"C:\msys64\usr\bin"), path_parts.index(r"C:\FPC\bin"))
+        self.assertLess(path_parts.index(r"C:\msys64\ucrt64\bin"), path_parts.index(r"C:\FPC\bin"))
+
     def test_msys_cargo_environment_prioritizes_matching_linker_tools(self):
         from services.tool_discovery import executable_environment
 

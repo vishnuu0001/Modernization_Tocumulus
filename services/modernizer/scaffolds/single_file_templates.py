@@ -621,6 +621,18 @@ def _tpl_java(fname: str, class_name: str, ns: str, user_prompt: str, offline_no
     relative_parent = normalized.split(source_marker, 1)[-1].rsplit("/", 1)[0]
     pkg = relative_parent.replace("/", ".").lower() if source_marker in normalized else ns.lower()
     base_pkg = pkg.rsplit(".", 1)[0] if "." in pkg else pkg
+    backend = str(target.get("backend_tech") or "").casefold()
+    is_spring = "spring" in backend
+    is_mongodb = "mongodb" in backend or str(target.get("db_target") or "").casefold() == "mongodb"
+    if not is_spring:
+        declaration = (
+            f"public interface {class_name} {{}}"
+            if class_name.endswith("Repository") else
+            f"public class {class_name} {{\n"
+            + ("    public static void main(String[] args) {}\n" if class_name.endswith("Application") or class_name == "Application" else "")
+            + "}"
+        )
+        return f"// {offline_note}\npackage {pkg};\n\n{declaration}\n"
     if class_name == "Application" or class_name.endswith("Application"):
         return textwrap.dedent(f"""\
             // {offline_note}
@@ -637,6 +649,24 @@ def _tpl_java(fname: str, class_name: str, ns: str, user_prompt: str, offline_no
             }}
         """)
     if class_name.endswith("Entity"):
+        if is_mongodb:
+            return textwrap.dedent(f"""\
+                // {offline_note}
+                package {pkg};
+
+                import org.springframework.data.annotation.Id;
+                import org.springframework.data.mongodb.core.mapping.Document;
+
+                @Document(collection = "items")
+                public class {class_name} {{
+                    @Id private Long id;
+                    private String name;
+                    public Long getId() {{ return id; }}
+                    public void setId(Long id) {{ this.id = id; }}
+                    public String getName() {{ return name; }}
+                    public void setName(String name) {{ this.name = name; }}
+                }}
+            """)
         return textwrap.dedent(f"""\
             // {offline_note}
             package {pkg};
@@ -661,14 +691,19 @@ def _tpl_java(fname: str, class_name: str, ns: str, user_prompt: str, offline_no
         """)
     if class_name.endswith("Repository"):
         entity = class_name.removesuffix("Repository") + "Entity"
+        repository_type = "MongoRepository" if is_mongodb else "JpaRepository"
+        repository_import = (
+            "org.springframework.data.mongodb.repository.MongoRepository"
+            if is_mongodb else "org.springframework.data.jpa.repository.JpaRepository"
+        )
         return textwrap.dedent(f"""\
             // {offline_note}
             package {pkg};
 
             import {base_pkg}.model.{entity};
-            import org.springframework.data.jpa.repository.JpaRepository;
+            import {repository_import};
 
-            public interface {class_name} extends JpaRepository<{entity}, Long> {{}}
+            public interface {class_name} extends {repository_type}<{entity}, Long> {{}}
         """)
     if class_name.endswith("Service"):
         entity = class_name.removesuffix("Service") + "Entity"
@@ -1022,15 +1057,14 @@ def _tpl_sql(fname: str, user_prompt: str, offline_note: str, target: dict) -> s
     if "db2" in dialect:
         return header + textwrap.dedent("""\
             CREATE TABLE items (
-                id BIGINT NOT NULL,
+                id INTEGER NOT NULL,
                 name VARCHAR(255) NOT NULL,
-                description CLOB,
-                is_active SMALLINT NOT NULL DEFAULT 1,
-                created_at TIMESTAMP NOT NULL DEFAULT CURRENT TIMESTAMP,
+                description VARCHAR(2000),
+                is_active SMALLINT NOT NULL,
+                created_at TIMESTAMP NOT NULL,
                 updated_at TIMESTAMP,
                 CONSTRAINT pk_items PRIMARY KEY (id)
             );
-            CREATE INDEX idx_items_name ON items(name);
         """)
     is_pg = "postgres" in dialect or "pg" in dialect
     id_col = "id BIGSERIAL PRIMARY KEY" if is_pg else "id INTEGER PRIMARY KEY"
@@ -1173,6 +1207,71 @@ def _template_from_prompt(fname: str, user_prompt: str, target: dict, project_na
         return _tpl_docker_compose(offline_note)
     if ext in ("yml", "yaml"):
         app_name = re.sub(r"[^a-z0-9-]+", "-", project_name.casefold()).strip("-") or "modernized-app"
+        artifact_language = str(target.get("language") or "").casefold()
+        if artifact_language == "kubernetes":
+            return textwrap.dedent(f"""\
+                apiVersion: apps/v1
+                kind: Deployment
+                metadata:
+                  name: {app_name}
+                spec:
+                  replicas: 2
+                  selector:
+                    matchLabels:
+                      app: {app_name}
+                  template:
+                    metadata:
+                      labels:
+                        app: {app_name}
+                    spec:
+                      containers:
+                        - name: application
+                          image: {app_name}:1.0.0
+                          ports:
+                            - containerPort: 8080
+            """)
+        if artifact_language == "cloudformation":
+            return textwrap.dedent("""\
+                AWSTemplateFormatVersion: '2010-09-09'
+                Description: Production application infrastructure
+                Resources:
+                  ArtifactBucket:
+                    Type: AWS::S3::Bucket
+            """)
+        if artifact_language == "ansible":
+            return textwrap.dedent("""\
+                - name: Configure application
+                  hosts: all
+                  become: true
+                  tasks:
+                    - name: Verify connectivity
+                      ansible.builtin.ping:
+            """)
+        if artifact_language == "github_actions":
+            return textwrap.dedent("""\
+                name: CI
+                on:
+                  push:
+                    branches: [main]
+                  pull_request:
+                jobs:
+                  validate:
+                    runs-on: ubuntu-latest
+                    steps:
+                      - uses: actions/checkout@v4
+                      - run: echo validated
+            """)
+        if artifact_language == "helm":
+            return textwrap.dedent(f"""\
+                replicaCount: 2
+                image:
+                  repository: {app_name}
+                  tag: 1.0.0
+                  pullPolicy: IfNotPresent
+                service:
+                  type: ClusterIP
+                  port: 8080
+            """)
         return textwrap.dedent(f"""\
             spring:
               application:
@@ -1215,8 +1314,36 @@ def _template_from_prompt(fname: str, user_prompt: str, target: dict, project_na
             "name": package_name,
             "version": "1.0.0",
             "private": True,
-            "scripts": {"test": "node --test"},
+            "scripts": {
+                "test": "node --test Database/schema_validation.test.js",
+                "build": "node --check Database/schema_validation.test.js",
+            },
         }, indent=2) + "\n"
+    if ext == "json":
+        return json.dumps({"name": project_name, "status": "ready", "version": 1}, indent=2) + "\n"
+    if ext == "toml":
+        return f'name = "{project_name}"\nversion = "1.0.0"\nenabled = true\n'
+    if ext == "xml":
+        return f'<?xml version="1.0" encoding="UTF-8"?>\n<application name="{project_name}" version="1.0.0"/>\n'
+    if ext in ("md", "markdown"):
+        return f"# {project_name}\n\nProduction-ready generated artifact.\n"
+    if ext in ("graphql", "gql"):
+        return "type Query { health: Health! }\ntype Health { status: String! }\n"
+    if ext == "proto":
+        return 'syntax = "proto3";\npackage modernized.v1;\nmessage HealthRequest {}\nmessage HealthResponse { string status = 1; }\nservice HealthService { rpc Check(HealthRequest) returns (HealthResponse); }\n'
+    if fname.replace("\\", "/").endswith("Jenkinsfile"):
+        return textwrap.dedent("""\
+            pipeline {
+                agent any
+                stages {
+                    stage('Validate') {
+                        steps {
+                            echo 'validated'
+                        }
+                    }
+                }
+            }
+        """)
     if fname.replace("\\", "/").endswith("pom.xml"):
         artifact_id = re.sub(r"[^a-z0-9-]+", "-", project_name.casefold()).strip("-") or "modernized-app"
         return textwrap.dedent(f"""\

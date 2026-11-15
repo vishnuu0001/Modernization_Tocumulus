@@ -1437,6 +1437,44 @@ import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
         self.assertIn("pytest", fastapi_manifest)
         self.assertIn("httpx", fastapi_manifest)
 
+        ruby = generate_polyglot_project(
+            "ruby", "Demo", "Orders", {"backend_tech": "Ruby 3 + Rails"},
+        )
+        gemfile = ruby["ModernizedApp/services/orders-service/Gemfile"]
+        self.assertIn("gem 'rdoc', '7.2.0'", gemfile)
+
+        swift = generate_polyglot_project(
+            "swift", "Demo", "Orders", {"backend_tech": "Vapor"},
+        )
+        package = swift["ModernizedApp/services/orders-service/Package.swift"]
+        self.assertIn('swift-nio-extras.git",exact:"1.32.1"', package)
+
+        dotnet10 = _backend_manifest_files(
+            "csharp", "Demo", ".NET 10 Web API", False, False, "postgres",
+        )["backend/Demo.csproj"]
+        self.assertIn('System.Security.Cryptography.Pkcs" Version="10.0.13', dotnet10)
+
+    def test_java_fallback_matches_framework_and_database_contract(self):
+        plain = _template_from_prompt(
+            "src/main/java/com/demo/OrderService.java", "Create Java service",
+            {"name": "Jakarta", "language": "java", "backend_tech": "Jakarta EE 10"},
+            "Demo",
+        )
+        self.assertIn("public class OrderService", plain)
+        self.assertNotIn("org.springframework", plain)
+
+        mongo = _template_from_prompt(
+            "src/main/java/com/demo/repository/OrderRepository.java",
+            "Create MongoDB repository",
+            {
+                "name": "Spring MongoDB", "language": "java",
+                "backend_tech": "Spring Boot 3", "db_target": "mongodb",
+            },
+            "Demo",
+        )
+        self.assertIn("MongoRepository<OrderEntity, Long>", mongo)
+        self.assertNotIn("JpaRepository", mongo)
+
     def test_offline_go_and_kotlin_scaffolds_are_build_closed(self):
         go_files = {
             name: _template_from_prompt(
@@ -1520,7 +1558,7 @@ import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
     # Function: test_project_builds_dispatch_to_framework_tools
     def test_project_builds_dispatch_to_framework_tools(self):
         expected = {
-            "rust": "cargo", "kotlin": "gradle", "swift": "swift",
+            "rust": "cargo", "kotlin": "gradle",
             "scala": "sbt", "r": "Rscript",
             "julia": "julia", "haskell": "cabal", "lisp": "sbcl",
             "shell": "bash",
@@ -1533,6 +1571,12 @@ import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
                 ) as mocked, patch("services.build_runner._which", return_value=None):
                     run_build({}, language, Path(directory) / language)
                     self.assertEqual(tool, mocked.call_args.args[1])
+            with patch(
+                "services.build_runner._run_swift_build",
+                return_value=BuildResult(True, "swift-build"),
+            ) as swift_build:
+                run_build({}, "swift", Path(directory) / "swift")
+                swift_build.assert_called_once()
 
 
 if __name__ == "__main__":

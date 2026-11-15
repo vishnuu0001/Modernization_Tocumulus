@@ -543,6 +543,8 @@ def _backend_manifest_files(lang: str, project_name: str, backend_tech: str,
         if is_azure_auth:
             pkgs.append('<PackageReference Include="Microsoft.Identity.Web" Version="4.16.1" />')
             pkgs.append('<PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.13" />')
+        elif tfm == "net10.0":
+            pkgs.append('<PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.13" />')
         pkgs.append('<PackageReference Include="Swashbuckle.AspNetCore" Version="6.5.0" />')
         pkg_xml = "\n                ".join(pkgs)
         return {f"backend/{project_name}.csproj": textwrap.dedent(f"""\

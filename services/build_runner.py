@@ -54,6 +54,7 @@ _NPX_PATH = shutil.which("npx") or shutil.which("npx.cmd")
 _BUILD_TIMEOUT = 180  # seconds — dotnet build / mvn compile
 _NPM_INSTALL_TIMEOUT = 180  # seconds — real package-tree fetch
 _NPM_BUILD_TIMEOUT = 420  # seconds — cold Angular/Vite/React production builds on Windows
+_CONTAINER_BUILD_TIMEOUT = 900  # seconds — cold native dependency graphs in Linux containers
 _TOOLCHAIN_CRASH_RETRIES = 2  # extra attempts after a detected transient npm/node crash
 _TOOLCHAIN_CRASH_BACKOFF = 5  # seconds between retries — lets transient memory pressure clear
 # Signatures of npm/node crashing itself before it ever reaches user code — a
@@ -101,6 +102,8 @@ def _run_process_tree(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         creationflags=windows_flags,
         start_new_session=os.name != "nt",
     )
@@ -1795,9 +1798,52 @@ def _run_special_language_build(tmp_dir: Path, language: str) -> BuildResult:
     if language == "erlang":
         return _run_erlang_otp_build(tmp_dir)
     command = "stack" if _which("stack") else "cabal"
+    stack_args = ["--skip-msys", "build", "--test"] if os.name == "nt" else ["build", "--test"]
     return _run_manifest_build(
-        tmp_dir, command, ["build", "--test"] if command == "stack" else ["build", "all"],
+        tmp_dir, command, stack_args if command == "stack" else ["build", "all"],
     )
+
+
+def _run_swift_build(tmp_dir: Path) -> BuildResult:
+    """Compile Vapor with Linux Swift on Windows, where Vapor 4 is POSIX-only.
+
+    Swift itself supports Windows, but Vapor's stable AsyncHTTPClient dependency
+    unconditionally compiles POSIX time shims. A native Windows compile therefore
+    fails inside third-party C source before generated application code is reached.
+    Docker provides the supported Linux compiler boundary used for deployment.
+    """
+    manifest = _find_one(tmp_dir, "Package.swift")
+    if not manifest:
+        return BuildResult(
+            False, _MISSING_MANIFEST,
+            {_BUILD_KEY: ["Generated output has no Package.swift"]},
+        )
+    docker = _which("docker") if os.name == "nt" else None
+    if not docker:
+        return _run_manifest_build(tmp_dir, "swift", ["test"])
+    mount = f"type=bind,source={manifest.parent.resolve()},target=/workspace"
+    try:
+        proc = _run_process_tree(
+            [
+                docker, "run", "--rm", "--mount", mount,
+                "-w", "/workspace", "swift:6.2-noble", "swift", "test",
+            ],
+            cwd=str(manifest.parent), timeout=_CONTAINER_BUILD_TIMEOUT,
+            env=executable_environment(docker),
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return BuildResult(False, "swift-docker-build", {_BUILD_KEY: [str(exc)]})
+    combined = (proc.stdout + "\n" + proc.stderr).strip()
+    if proc.returncode:
+        diagnostic_lines = [
+            line for line in combined.splitlines()
+            if re.search(r"(?i)(?:\berror:|fatal(?:error)?:|undefined reference)", line)
+        ]
+        detail = "\n".join(diagnostic_lines[-40:] + [combined[-3000:]])[-12000:]
+        return BuildResult(
+            False, "swift-docker-build", {_BUILD_KEY: [detail]}, combined,
+        )
+    return BuildResult(True, "swift-docker-build", raw_output=combined)
 
 
 def _dispatch_build(
@@ -1813,6 +1859,8 @@ def _dispatch_build(
         )
     if language == "sql":
         return _run_sql_project_build(tmp_dir, sql_dialect)
+    if language == "swift":
+        return _run_swift_build(tmp_dir)
     if language in ARTIFACT_BUILD_LANGUAGES:
         return _run_artifact_project_build(tmp_dir, language)
     if language in _CONFIGURED_MANIFEST_ROUTES:
@@ -1875,19 +1923,48 @@ def _run_manifest_build(
         if not command_args:
             continue
         try:
+            build_timeout = (
+                _NPM_BUILD_TIMEOUT
+                if tool in {"flutter", "stack", "swift"}
+                else _BUILD_TIMEOUT
+            )
+            environment = (
+                _java_build_environment(manifest)
+                if tool == "gradle" else executable_environment(executable)
+            )
+            effective_args = list(command_args)
+            if tool == "swift" and environment.get("SDKROOT"):
+                effective_args.extend(["--sdk", environment["SDKROOT"]])
             proc = _run_process_tree(
-                [executable, *command_args], cwd=str(manifest.parent),
-                timeout=_BUILD_TIMEOUT,
-                env=(_java_build_environment(manifest) if tool == "gradle" else executable_environment(executable)),
+                [executable, *effective_args], cwd=str(manifest.parent),
+                timeout=build_timeout,
+                env=environment,
             )
         except (OSError, subprocess.SubprocessError) as exc:
             return BuildResult(False, f"{tool}-build", {_BUILD_KEY: [str(exc)]}, "\n".join(outputs))
         combined = (proc.stdout + "\n" + proc.stderr).strip()
         outputs.append(combined)
         if proc.returncode:
+            # Verbose native builds can print the actionable compiler error
+            # thousands of lines before a generic final "Build failed". Keep a
+            # bounded selection of diagnostics as well as the tail so callers
+            # can repair the real cause instead of retrying blind.
+            diagnostic_lines = [
+                line for line in combined.splitlines()
+                if re.search(
+                    r"(?i)(?:\berror(?:\[[^]]+\])?:|fatal(?:error)?:|"
+                    r"undefined reference|cannot find|no rule to make target)",
+                    line,
+                )
+            ]
+            diagnostic = "\n".join(diagnostic_lines[-40:])
+            tail = combined[-3000:]
+            failure_detail = "\n".join(
+                part for part in (diagnostic, tail) if part
+            ) or f"{tool} build failed"
             return BuildResult(
                 False, f"{tool}-build",
-                {_BUILD_KEY: [combined[-3000:] or f"{tool} build failed"]},
+                {_BUILD_KEY: [failure_detail[-12000:]]},
                 "\n".join(outputs),
             )
     return BuildResult(True, f"{tool}-build", raw_output="\n".join(outputs))
