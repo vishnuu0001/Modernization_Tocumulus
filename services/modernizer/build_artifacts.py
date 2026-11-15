@@ -2199,6 +2199,7 @@ def _reconcile_java_generation_output(
     _dedupe_java_fqcns(output)
     _reconcile_java_type_package_clashes(output)
     _reconcile_java_console_logging_calls(output)
+    _reconcile_jboss_logging_placeholders(output)
     _reconcile_java_mutating_optional_lambdas(output)
     _remove_invalid_java_imports(output)
     _reconcile_java_spring_component_stereotypes(output)
@@ -5941,6 +5942,55 @@ def _reconcile_java_logger_api_from_diagnostics(
     return changed
 
 
+def _reconcile_jboss_logging_placeholders(output: dict[str, str]) -> set[str]:
+    """Translate SLF4J placeholder calls emitted against JBoss Logging.
+
+    JBoss ``Logger.info(String, Object)`` treats the second argument as a
+    ``Throwable``; parameterized messages use the printf-style ``infof``
+    family instead. Keep this repair deliberately import- and receiver-bound
+    so valid SLF4J calls and JBoss ``error(message, throwable)`` overloads are
+    left unchanged.
+    """
+    changed: set[str] = set()
+    jboss_import = "import org.jboss.logging.Logger;"
+    logger_declaration = re.compile(
+        r"\bLogger\s+([A-Za-z_$][\w$]*)\s*=\s*Logger\.getLogger\s*\("
+    )
+    for path, content in list(output.items()):
+        if (
+            not isinstance(content, str)
+            or not path.casefold().endswith(".java")
+            or jboss_import not in content
+        ):
+            continue
+        receivers = {match.group(1) for match in logger_declaration.finditer(content)}
+        repaired = content
+        for receiver in receivers:
+            call_pattern = re.compile(
+                rf"\b{re.escape(receiver)}\."
+                r"(?P<level>trace|debug|info|warn|error)"
+                r"\(\s*(?P<message>\"(?:\\.|[^\"\\])*\")"
+                r"(?P<arguments>\s*,(?:(?!\);).)*?)\);",
+                re.DOTALL,
+            )
+
+            def use_printf_api(match: re.Match) -> str:
+                message = match.group("message")
+                if "{}" not in message:
+                    return match.group(0)
+                formatted = message.replace("%", "%%").replace("{}", "%s")
+                return (
+                    f"{receiver}.{match.group('level')}f("
+                    f"{formatted}{match.group('arguments')});"
+                )
+
+            repaired = call_pattern.sub(use_printf_api, repaired)
+        if repaired != content:
+            output[path] = repaired
+            changed.add(path)
+    return changed
+
+
 def _repair_java_structural_diagnostics(
     output: dict[str, str], errors_by_file: dict[str, list[str]],
 ) -> set[str]:
@@ -6109,6 +6159,7 @@ def _apply_deterministic_java_diagnostic_repairs(
     changed |= _reconcile_java_static_invocations_from_diagnostics(output, errors_by_file)
     changed |= _remove_java_invalid_type_imports_from_diagnostics(output, errors_by_file)
     changed |= _reconcile_java_logger_api_from_diagnostics(output, errors_by_file)
+    changed |= _reconcile_jboss_logging_placeholders(output)
     for path, diagnostics in errors_by_file.items():
         content = output.get(path)
         if not isinstance(content, str) or not any(

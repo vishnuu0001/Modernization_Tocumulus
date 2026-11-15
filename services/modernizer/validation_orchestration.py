@@ -1096,7 +1096,9 @@ def _generate_validated(
                 "own manifest files, never as private nested controller classes. Add every "
                 "required java.util/java.time/java.math import explicitly. Never declare a "
                 "record that extends Exception, RuntimeException, Error, or any other class: "
-                "Java records cannot extend classes.\n"
+                "Java records cannot extend classes. When org.jboss.logging.Logger is imported, "
+                "parameterized messages must use infof/debugf/warnf/errorf with printf "
+                "placeholders; never use SLF4J-style {} templates with info/debug/warn/error.\n"
             )
         if validation_language == "sql":
             effective_sql_dialect = (

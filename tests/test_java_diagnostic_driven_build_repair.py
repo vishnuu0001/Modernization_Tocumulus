@@ -6,6 +6,7 @@ from services.modernizer.build_artifacts import (
     _add_known_java_imports,
     _apply_deterministic_java_diagnostic_repairs,
     _java_lexical_tail_state,
+    _reconcile_jboss_logging_placeholders,
     _reconcile_java_logger_api_from_diagnostics,
     _reconcile_java_entity_update_copy_contracts,
     _reconcile_java_missing_well_known_imports_from_diagnostics,
@@ -457,6 +458,51 @@ class JavaLegacyContractDiagnosticRepairTests(unittest.TestCase):
         self.assertIn("import org.slf4j.LoggerFactory;", output[path])
         self.assertIn("LoggerFactory.getLogger(TrainUtil.class)", output[path])
         self.assertNotIn("java.util.logging.Logger", output[path])
+
+    def test_reconciles_only_parameterized_jboss_logging_calls(self):
+        path = "Demo/src/main/java/p/AuthController.java"
+        output = {path: (
+            "package p;\nimport org.jboss.logging.Logger;\n"
+            "public class AuthController {\n"
+            "  private static final Logger log = Logger.getLogger(AuthController.class);\n"
+            "  void load(Long id, String name, Exception exception) {\n"
+            "    log.info(\"Loaded id={}\", id);\n"
+            "    log.warn(\"Pair {} {}\", id, name);\n"
+            "    log.info(\"Progress 100% id={}\", id);\n"
+            "    log.error(\"Request failed\", exception);\n"
+            "  }\n}\n"
+        )}
+
+        changed = _reconcile_jboss_logging_placeholders(output)
+
+        self.assertEqual({path}, changed)
+        self.assertIn('log.infof("Loaded id=%s", id);', output[path])
+        self.assertIn('log.warnf("Pair %s %s", id, name);', output[path])
+        self.assertIn('log.infof("Progress 100%% id=%s", id);', output[path])
+        self.assertIn('log.error("Request failed", exception);', output[path])
+
+    def test_does_not_rewrite_slf4j_or_plain_jboss_calls(self):
+        slf4j_path = "Demo/src/main/java/p/Slf4jService.java"
+        jboss_path = "Demo/src/main/java/p/JBossService.java"
+        output = {
+            slf4j_path: (
+                "package p;\nimport org.slf4j.Logger;\n"
+                "class Slf4jService { Logger log; void load(Long id) { "
+                'log.info("Loaded id={}", id); } }\n'
+            ),
+            jboss_path: (
+                "package p;\nimport org.jboss.logging.Logger;\n"
+                "class JBossService { private static final Logger log = "
+                "Logger.getLogger(JBossService.class); void ready() { "
+                'log.info("ready"); } }\n'
+            ),
+        }
+        original = dict(output)
+
+        changed = _reconcile_jboss_logging_placeholders(output)
+
+        self.assertEqual(set(), changed)
+        self.assertEqual(original, output)
 
 
 class JavaTransactionalImportConflictRepairTests(unittest.TestCase):

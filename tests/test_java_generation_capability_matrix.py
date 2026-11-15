@@ -138,6 +138,30 @@ class JavaGenerationCapabilityMatrixTests(unittest.TestCase):
         self.assertTrue(report["passed"], report["diagnostics"])
         self.assertEqual({"quarkus"}, {item["framework"] for item in report["modules"]})
 
+    def test_quarkus_reconciliation_normalizes_jboss_parameterized_logging(self):
+        path = "Demo/backend/auth-service/src/main/java/com/app/auth/AuthController.java"
+        output = {path: (
+            "package com.app.auth;\n"
+            "import org.jboss.logging.Logger;\n"
+            "public class AuthController {\n"
+            "  private static final Logger log = Logger.getLogger(AuthController.class);\n"
+            "  void find(Long id) { log.info(\"Retrieving user by ID: {}\", id); }\n"
+            "}\n"
+        )}
+
+        _reconcile_java_generation_output(
+            output, "Demo", {"backend_tech": "Java 21 Quarkus", "db_target": "postgres"},
+        )
+
+        controller = next(
+            content for content in output.values()
+            if isinstance(content, str) and "Retrieving user by ID" in content
+        )
+        self.assertIn(
+            'log.infof("Retrieving user by ID: %s", id);', controller,
+        )
+        self.assertNotIn('log.info("Retrieving user by ID: {}", id)', controller)
+
     def test_framework_scoped_dependency_inference_rejects_cross_framework_leakage(self):
         source = {
             "Entity.java": (
