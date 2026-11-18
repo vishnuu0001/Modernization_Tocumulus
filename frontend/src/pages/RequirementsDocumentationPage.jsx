@@ -13,6 +13,12 @@ import {
 } from '../api/client.js'
 
 const fieldClass = 'w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-blue-400 focus:ring-4 focus:ring-blue-500/10'
+const ARCHITECTURE_STACK_FALLBACKS = [
+  { id: 'dotnet8_blazor', name: '.NET 8 Blazor Server + SQL Server' },
+  { id: 'spring_boot_react', name: 'Spring Boot + React + PostgreSQL' },
+  { id: 'python_fastapi', name: 'FastAPI + SQLAlchemy + PostgreSQL' },
+  { id: 'custom', name: 'Custom technology stack' },
+]
 const TYPE_META = {
   brd: { title: 'Business Requirements Document', short: 'BRD', icon: FileText, description: 'Generate a detailed, evidence-grounded business requirements document from the uploaded project.' },
   fsd: { title: 'Functional Specification Document', short: 'FSD', icon: FileText, description: 'Translate source-code evidence into detailed functional behavior, interfaces, data rules, implementation specifications, and acceptance scenarios.' },
@@ -292,13 +298,33 @@ function ProjectIdentityBanner({ identity, project }) {
 function TargetArchitectureReview() {
   const navigate = useNavigate()
   const { projects, projectId, project, artifact: plan, loading, selectProject, refresh } = useProjectArtifact('plans')
-  const [stacks, setStacks] = useState([])
+  const [stacks, setStacks] = useState(ARCHITECTURE_STACK_FALLBACKS)
+  const [stacksLoading, setStacksLoading] = useState(true)
+  const [stackLoadError, setStackLoadError] = useState(false)
+  const [stackReloadKey, setStackReloadKey] = useState(0)
   const [targetStack, setTargetStack] = useState('')
   const [customStackDescription, setCustomStackDescription] = useState('')
   const [generating, setGenerating] = useState(false)
   useEffect(() => {
-    getTargetStacks().then(result => setStacks([...(result.stacks || []).filter(stack => stack.id !== 'custom'), { id: 'custom', name: 'Custom technology stack' }])).catch(() => toast.error('Could not load target technology stacks'))
-  }, [])
+    let active = true
+    setStacksLoading(true)
+    setStackLoadError(false)
+    getTargetStacks()
+      .then(result => {
+        if (!active) return
+        const catalog = (result.stacks || []).filter(stack => stack.id !== 'custom')
+        if (catalog.length) setStacks([...catalog, ARCHITECTURE_STACK_FALLBACKS.at(-1)])
+      })
+      .catch(() => {
+        if (!active) return
+        setStackLoadError(true)
+        toast.error('Could not load the full target stack catalog; verified defaults remain available')
+      })
+      .finally(() => {
+        if (active) setStacksLoading(false)
+      })
+    return () => { active = false }
+  }, [stackReloadKey])
   useEffect(() => {
     const configured = project?.configuration?.engine_target || project?.configuration?.target_stack
     if (configured && stacks.some(stack => stack.id === configured)) setTargetStack(configured)
@@ -337,7 +363,7 @@ function TargetArchitectureReview() {
 
   return <PageFrame title="Target Architecture Review" description="Review the generated target topology, domain boundaries, technology choices, and engineering principles before forward engineering begins." step={4}>
     <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-[0_12px_35px_rgba(15,23,42,0.06)]"><RequirementsProjectPicker projects={projects} projectId={projectId} onChange={selectProject} /><div className="mt-4"><ProjectIdentityBanner project={project} /></div></section>
-    {loading ? <div className="flex min-h-72 items-center justify-center"><LoaderCircle className="h-8 w-8 animate-spin text-blue-600" /></div> : !plan ? <section className="mt-6 rounded-2xl border border-dashed border-slate-300 bg-white px-6 py-16 text-center"><Boxes className="mx-auto h-10 w-10 text-slate-300" /><p className="mt-4 text-sm font-bold text-slate-700">Generate the governed target architecture</p><p className="mx-auto mt-1 max-w-xl text-xs leading-5 text-slate-500">The requirements artifacts are available, but this project has not completed source analysis and architecture planning. Select the intended target stack to create those governed snapshots.</p><div className="mx-auto mt-6 max-w-2xl space-y-3"><div className="flex flex-col gap-3 sm:flex-row"><select aria-label="Target technology stack" value={targetStack} onChange={event => setTargetStack(event.target.value)} className={`${fieldClass} flex-1 text-left`}><option value="">Select target technology stack</option>{stacks.map(stack => <option key={stack.id} value={stack.id}>{stack.name}</option>)}</select><button type="button" disabled={!projectId || !targetStack || (targetStack === 'custom' && !customStackDescription.trim()) || generating} onClick={generateArchitecture} className="inline-flex min-w-56 items-center justify-center rounded-xl bg-blue-600 px-5 py-3 text-sm font-bold text-white shadow-lg shadow-blue-600/20 hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40">{generating ? <><LoaderCircle className="mr-2 h-4 w-4 animate-spin" />Generating architecture…</> : <><GitBranch className="mr-2 h-4 w-4" />Generate architecture</>}</button></div>{targetStack === 'custom' && <div className="text-left"><label htmlFor="architecture-custom-stack" className="mb-1.5 block text-xs font-bold text-slate-700">Describe the target technology stack</label><textarea id="architecture-custom-stack" rows="4" required value={customStackDescription} onChange={event => setCustomStackDescription(event.target.value)} className={fieldClass} placeholder="Example: Java 21 with Spring Boot 3, React 19 with TypeScript, PostgreSQL 17, Kafka, Docker, and Kubernetes deployment." /><p className="mt-1.5 text-[11px] leading-4 text-slate-500">Include the required languages, frameworks, database, integrations, runtime, and deployment platform.</p></div>}</div></section> : <>
+    {loading ? <div className="flex min-h-72 items-center justify-center"><LoaderCircle className="h-8 w-8 animate-spin text-blue-600" /></div> : !plan ? <section className="mt-6 rounded-2xl border border-dashed border-slate-300 bg-white px-6 py-16 text-center"><Boxes className="mx-auto h-10 w-10 text-slate-300" /><p className="mt-4 text-sm font-bold text-slate-700">Generate the governed target architecture</p><p className="mx-auto mt-1 max-w-xl text-xs leading-5 text-slate-500">The requirements artifacts are available, but this project has not completed source analysis and architecture planning. Select the intended target stack to create those governed snapshots.</p><div className="mx-auto mt-6 max-w-2xl space-y-3"><div className="flex flex-col gap-3 sm:flex-row"><select aria-label="Target technology stack" value={targetStack} onChange={event => setTargetStack(event.target.value)} className={`${fieldClass} flex-1 text-left`}><option value="">Select target technology stack</option>{stacks.map(stack => <option key={stack.id} value={stack.id}>{stack.name}</option>)}</select><button type="button" disabled={!projectId || !targetStack || (targetStack === 'custom' && !customStackDescription.trim()) || generating} onClick={generateArchitecture} className="inline-flex min-w-56 items-center justify-center rounded-xl bg-blue-600 px-5 py-3 text-sm font-bold text-white shadow-lg shadow-blue-600/20 hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40">{generating ? <><LoaderCircle className="mr-2 h-4 w-4 animate-spin" />Generating architecture…</> : <><GitBranch className="mr-2 h-4 w-4" />Generate architecture</>}</button></div>{stacksLoading && <p className="flex items-center justify-center gap-2 text-[11px] text-slate-500"><LoaderCircle className="h-3.5 w-3.5 animate-spin" />Loading the full target stack catalog; verified defaults are ready.</p>}{stackLoadError && <p className="text-[11px] text-amber-700">The full catalog is temporarily unavailable. Choose a verified default or <button type="button" onClick={() => setStackReloadKey(value => value + 1)} className="font-bold underline underline-offset-2">retry</button>.</p>}{targetStack === 'custom' && <div className="text-left"><label htmlFor="architecture-custom-stack" className="mb-1.5 block text-xs font-bold text-slate-700">Describe the target technology stack</label><textarea id="architecture-custom-stack" rows="4" required value={customStackDescription} onChange={event => setCustomStackDescription(event.target.value)} className={fieldClass} placeholder="Example: Java 21 with Spring Boot 3, React 19 with TypeScript, PostgreSQL 17, Kafka, Docker, and Kubernetes deployment." /><p className="mt-1.5 text-[11px] leading-4 text-slate-500">Include the required languages, frameworks, database, integrations, runtime, and deployment platform.</p></div>}</div></section> : <>
       <div className="mt-6 flex items-center gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm font-semibold text-emerald-800"><CheckCircle2 className="h-5 w-5" />Requirements analysis complete. Review the target architecture before proceeding.</div>
       <div className="mt-6 grid gap-6 xl:grid-cols-[320px_minmax(0,1fr)]">
         <section className="rounded-2xl border border-slate-200 bg-white p-5"><p className="text-[10px] font-bold uppercase tracking-[0.14em] text-blue-600">Business domains identified · {domains.length}</p><div className="mt-4 space-y-2">{domains.length ? domains.map((domain, index) => <div key={String(domain)} className="flex items-start gap-3 rounded-xl border border-slate-100 bg-slate-50 p-3"><span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${['bg-blue-100 text-blue-600', 'bg-violet-100 text-violet-600', 'bg-amber-100 text-amber-600', 'bg-emerald-100 text-emerald-600'][index % 4]}`}><Boxes className="h-4 w-4" /></span><div><p className="text-xs font-bold text-slate-800">{String(domain).split('/').pop()}</p><p className="mt-1 text-[10px] leading-4 text-slate-500">Bounded capability discovered from project structure</p></div></div>) : <p className="text-xs text-slate-500">The plan did not expose explicit domain modules.</p>}</div></section>
