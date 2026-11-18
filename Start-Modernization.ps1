@@ -35,8 +35,8 @@ if (-not (Test-Path -LiteralPath $pythonExe)) {
     throw "Python environment not found at $pythonExe. Create .venv and install requirements.txt."
 }
 $pythonVersion = (& $pythonExe -c "import platform; print(platform.python_version())").Trim()
-if (-not $pythonVersion.StartsWith('3.15.')) {
-    throw "Python 3.15 is required; $pythonExe is Python $pythonVersion. Recreate .venv with Python 3.15."
+if (-not $pythonVersion.StartsWith('3.14.')) {
+    throw "Python 3.14 is required; $pythonExe is Python $pythonVersion. Recreate .venv with Python 3.14."
 }
 
 if ([string]::IsNullOrWhiteSpace($env:MODERNIZATION_DATABASE_URL)) {

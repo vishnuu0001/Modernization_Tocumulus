@@ -4,8 +4,8 @@ Modernization Studio is a self-contained FastAPI and React module. It runs on
 `http://127.0.0.1:18084/` and does not require the StratIQ portal or any sibling
 application module.
 
-The backend runtime requires Python 3.15; the qualified local and container
-version is Python 3.15.2. Create `.venv` with that interpreter before installing
+The backend runtime requires Python 3.14; the qualified local and container
+version is Python 3.14.10. Create `.venv` with that interpreter before installing
 `requirements.txt` and `requirements-dev.txt`.
 
 For the portable, source-free container image, cloud-agnostic deployment

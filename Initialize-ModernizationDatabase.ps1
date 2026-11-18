@@ -13,11 +13,11 @@ $env:PYTHON_LAZY_IMPORTS = 'normal'
 $env:PYTHON_JIT = '0'
 $env:PYTHON_GIL = '1'
 if (-not (Test-Path -LiteralPath $pythonExe)) {
-    throw "Python environment not found at $pythonExe. Create .venv with Python 3.15 and install requirements.txt."
+    throw "Python environment not found at $pythonExe. Create .venv with Python 3.14 and install requirements.txt."
 }
 $pythonVersion = (& $pythonExe -c "import platform; print(platform.python_version())").Trim()
-if (-not $pythonVersion.StartsWith('3.15.')) {
-    throw "Python 3.15 is required; $pythonExe is Python $pythonVersion. Recreate .venv with Python 3.15."
+if (-not $pythonVersion.StartsWith('3.14.')) {
+    throw "Python 3.14 is required; $pythonExe is Python $pythonVersion. Recreate .venv with Python 3.14."
 }
 $psql = 'C:\Program Files\PostgreSQL\16\bin\psql.exe'
 $createdb = 'C:\Program Files\PostgreSQL\16\bin\createdb.exe'

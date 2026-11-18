@@ -1,6 +1,6 @@
 """Fail-fast Python runtime policy for the production application.
 
-Python 3.15 adds useful opt-in execution modes, but enabling them globally can
+Modern CPython adds useful opt-in execution modes, but enabling them globally can
 move import failures, change extension-module behavior, or expose shared state
 to true parallel execution.  Modernization keeps the established eager-import,
 GIL-enabled, non-JIT contract until each alternate mode is qualified separately.
@@ -23,7 +23,7 @@ SAFE_RUNTIME_ENV: Mapping[str, str] = MappingProxyType({
 })
 
 # A private identity marker is sufficient for an in-process capability probe.
-# The Python 3.15 sentinel type is unnecessary here and would add global naming
+# A global sentinel type is unnecessary here and would add naming
 # and pickling semantics to a value that must never cross a process boundary.
 _UNAVAILABLE = object()
 
@@ -86,8 +86,8 @@ def enforce_safe_python_runtime(
     """Reject execution modes not yet qualified for the application."""
     current = profile or inspect_python_runtime()
     violations: list[str] = []
-    if sys.version_info < (3, 15, 2):
-        violations.append("Python 3.15.2 or newer is required")
+    if sys.version_info < (3, 14, 10) or sys.version_info >= (3, 15):
+        violations.append("Python 3.14.10 is required")
     if current.lazy_imports != "normal":
         violations.append("global lazy imports must be disabled")
     if current.free_threaded_build:

@@ -13,22 +13,22 @@ from services.python_runtime import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_local_runtime_contract_requires_python_315():
-    assert (ROOT / ".python-version").read_text(encoding="utf-8").strip() == "3.15.2"
+def test_local_runtime_contract_requires_python_314():
+    assert (ROOT / ".python-version").read_text(encoding="utf-8").strip() == "3.14.10"
     launcher = (ROOT / "Start-Modernization.ps1").read_text(encoding="utf-8")
     database = (ROOT / "Initialize-ModernizationDatabase.ps1").read_text(encoding="utf-8")
-    assert "StartsWith('3.15.')" in launcher
-    assert "StartsWith('3.15.')" in database
+    assert "StartsWith('3.14.')" in launcher
+    assert "StartsWith('3.14.')" in database
 
 
-def test_container_runtime_is_pinned_to_python_315():
+def test_container_runtime_is_pinned_to_python_314():
     dockerfile = (ROOT / "docker" / "Dockerfile.standalone").read_text(encoding="utf-8")
-    assert "FROM python:3.15.2-slim-bookworm AS python-runtime" in dockerfile
+    assert "FROM python:3.14.10-slim-bookworm AS python-runtime" in dockerfile
     assert "COPY --from=python-runtime /usr/local/ /usr/local/" in dockerfile
     assert "python3 python3-pip python3-venv" not in dockerfile
 
 
-def test_pyyaml_is_upgraded_for_python_315_source_build():
+def test_pyyaml_supports_python_314_source_build():
     requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
     assert "pyyaml==6.0.3" in requirements.casefold()
 
