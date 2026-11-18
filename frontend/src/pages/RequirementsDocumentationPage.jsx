@@ -309,7 +309,7 @@ function TargetArchitectureReview() {
     let active = true
     setStacksLoading(true)
     setStackLoadError(false)
-    getTargetStacks()
+    getTargetStacks({ includeReadiness: false })
       .then(result => {
         if (!active) return
         const catalog = (result.stacks || []).filter(stack => stack.id !== 'custom')

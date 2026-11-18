@@ -351,7 +351,8 @@ export const analyzeProject = async (id, target_stack, custom_stack_desc = '') =
 export const generateProjectPlan = async (id, target_stack, custom_stack_desc = '') =>
   (await api.post(`/projects/${id}/plans`, { target_stack, custom_stack_desc })).data
 // Function: getTargetStacks
-export const getTargetStacks = async () => (await api.get('/modernize/target-stacks')).data
+export const getTargetStacks = async ({ includeReadiness = true } = {}) =>
+  (await api.get('/modernize/target-stacks', { params: { include_readiness: includeReadiness } })).data
 // Function: getToolchainStatus
 export const getToolchainStatus = async () => (await api.get('/modernize/toolchains')).data
 // Function: installToolchain

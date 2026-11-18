@@ -2753,12 +2753,14 @@ def _stack_readiness(stack: dict, tools: dict) -> dict:
 
 # Function: target_stacks
 @app.get("/api/modernize/target-stacks")
-async def target_stacks():
-    """Return engine-native and guided presets; custom is always supported."""
+async def target_stacks(include_readiness: bool = True):
+    """Return target presets, optionally enriched with live toolchain readiness.
+
+    Catalog-only consumers such as selectors must not wait for host compiler
+    probes. Detailed readiness remains available here by default and through
+    the dedicated ``/modernize/toolchains`` endpoint.
+    """
     from services.modernizer import TARGET_STACKS
-    from services.build_runner import toolchain_status
-    readiness = await asyncio.to_thread(toolchain_status)
-    tools = readiness["tools"]
     native = []
     for stack_id, value in TARGET_STACKS.items():
         category = "Database migration" if value.get("language") == "sql" else value.get("language", "Other").title()
@@ -2770,6 +2772,18 @@ async def target_stacks():
     guided = [{"id": item[0], "engine_target": "custom", "name": item[1], "category": item[2],
                "language": item[3], "backend": item[4], "frontend": item[5], "database": item[6], "native": False}
               for item in _ADDITIONAL_STACK_PRESETS if item[0] not in native_ids]
+    if not include_readiness:
+        return {
+            "stacks": native + guided,
+            "custom_supported": True,
+            "readiness_included": False,
+            "validation_policy": (
+                "Select a target immediately; verify compiler and parser readiness before generation."
+            ),
+        }
+    from services.build_runner import toolchain_status
+    readiness = await asyncio.to_thread(toolchain_status)
+    tools = readiness["tools"]
     stacks = [{**stack, **_stack_readiness(stack, tools)} for stack in native + guided]
     production_ready = sorted({stack["language"] for stack in stacks if stack["available"] and stack.get("language")})
     externally_gated = sorted({stack["language"] for stack in stacks if not stack["available"] and stack.get("language")})
@@ -2786,6 +2800,7 @@ async def target_stacks():
     return {
         "stacks": stacks,
         "custom_supported": True,
+        "readiness_included": True,
         "supported_languages": [value for value in production_ready if value not in _ARTIFACT_LANGUAGES],
         "production_project_languages": production_project_languages,
         "externally_gated_languages": [value for value in externally_gated if value not in _ARTIFACT_LANGUAGES],

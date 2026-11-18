@@ -17,6 +17,13 @@ from services.validators import _resolve_sql_dialect
 
 
 class TargetStackCatalogTests(unittest.TestCase):
+    def test_catalog_only_route_does_not_require_live_toolchain_probes(self):
+        catalog = asyncio.run(target_stacks(include_readiness=False))
+
+        self.assertFalse(catalog["readiness_included"])
+        self.assertGreater(len(catalog["stacks"]), 100)
+        self.assertTrue(all("available" not in stack for stack in catalog["stacks"]))
+
     def test_every_guided_prompt_preserves_its_advertised_primary_language(self):
         from api.server import _ADDITIONAL_STACK_PRESETS
 

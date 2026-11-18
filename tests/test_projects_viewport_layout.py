@@ -93,6 +93,7 @@ def test_architecture_and_generated_asset_empty_states_are_actionable():
     assert "useState(ARCHITECTURE_STACK_FALLBACKS)" in requirements_source
     assert "verified defaults are ready" in requirements_source
     assert "setStackReloadKey(value => value + 1)" in requirements_source
+    assert "getTargetStacks({ includeReadiness: false })" in requirements_source
     assert 'id="architecture-custom-stack"' in requirements_source
     assert "Generate architecture" in requirements_source
     assert "Open forward engineering" in requirements_source
